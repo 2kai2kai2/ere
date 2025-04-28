@@ -4,27 +4,27 @@ use crate::parse_tree::Atom;
 use crate::simplified_tree::SimplifiedTreeNode;
 
 #[derive(thiserror::Error, Debug)]
-enum PureNFAError {
+pub enum PureNFAError {
     #[error("The PureNFA does not support anchors.")]
     UnexpectedAnchor,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct PureNFAEpsilonTransition {
-    from: usize,
-    to: usize,
+    pub(crate) from: usize,
+    pub(crate) to: usize,
 }
 impl PureNFAEpsilonTransition {
-    pub fn new(from: usize, to: usize) -> PureNFAEpsilonTransition {
+    pub const fn new(from: usize, to: usize) -> PureNFAEpsilonTransition {
         return PureNFAEpsilonTransition { from, to };
     }
-    pub fn with_offset(self, offset: usize) -> PureNFAEpsilonTransition {
+    pub(crate) const fn with_offset(self, offset: usize) -> PureNFAEpsilonTransition {
         return PureNFAEpsilonTransition {
             from: self.from + offset,
             to: self.to + offset,
         };
     }
-    pub fn add_offset(&self, offset: usize) -> PureNFAEpsilonTransition {
+    pub(crate) const fn add_offset(&self, offset: usize) -> PureNFAEpsilonTransition {
         return PureNFAEpsilonTransition {
             from: self.from + offset,
             to: self.to + offset,
@@ -38,10 +38,10 @@ impl std::fmt::Display for PureNFAEpsilonTransition {
 }
 
 #[derive(Debug, Clone)]
-pub struct PureNFATransition {
-    from: usize,
-    to: usize,
-    symbol: Atom,
+pub(crate) struct PureNFATransition {
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    pub(crate) symbol: Atom,
 }
 impl PureNFATransition {
     pub fn new(from: usize, to: usize, symbol: Atom) -> PureNFATransition {
@@ -70,14 +70,14 @@ impl std::fmt::Display for PureNFATransition {
 
 /// Each NFA has one start state (`0`) and one accept state (`states - 1`)
 #[derive(Debug)]
-struct PureNFA {
-    transitions: Vec<PureNFATransition>,
-    epsilons: Vec<PureNFAEpsilonTransition>,
-    states: usize,
+pub struct PureNFA {
+    pub(crate) transitions: Vec<PureNFATransition>,
+    pub(crate) epsilons: Vec<PureNFAEpsilonTransition>,
+    pub(crate) states: usize,
 }
 impl PureNFA {
     /// Builds a very inefficient but valid NFA
-    /// 
+    ///
     /// Should be optimized using [`PureNFA::optimize_pass`]
     fn build_basic(tree: &SimplifiedTreeNode) -> Result<PureNFA, PureNFAError> {
         match tree {

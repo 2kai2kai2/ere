@@ -1,7 +1,11 @@
 use std::fmt::{Display, Write};
 
-/// https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html
-pub(crate) struct ERE(pub(crate) Vec<EREBranch>);
+use proc_macro2::TokenStream;
+use quote::{quote, ToTokens};
+
+/// A represents a [POSIX-compliant ERE](https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html).
+/// Primarily intended for use as a parser.
+pub struct ERE(pub(crate) Vec<EREBranch>);
 impl ERE {
     fn take<'a>(rest: &'a str) -> Option<(&'a str, ERE)> {
         let mut branches = Vec::new();
@@ -202,11 +206,11 @@ impl Display for Quantifier {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(crate) enum CharClass {
+pub enum CharClass {
     Dot,
 }
 impl CharClass {
-    fn check(&self, c: char) -> bool {
+    pub const fn check(&self, c: char) -> bool {
         return match self {
             CharClass::Dot => c != '\0',
         };
@@ -219,9 +223,16 @@ impl Display for CharClass {
         };
     }
 }
+impl ToTokens for CharClass {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            CharClass::Dot => tokens.extend(quote! {::posixere_core::parse_tree::CharClass::Dot}),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub(crate) enum Atom {
+pub enum Atom {
     /// Includes normal char and escaped chars
     NormalChar(char),
     CharClass(CharClass), // TODO
@@ -332,13 +343,13 @@ impl Display for Atom {
     }
 }
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(crate) enum BracketExpressionTerm {
+pub enum BracketExpressionTerm {
     Single(char),
     Range(char, char),
     CharClass(CharClass),
 }
 impl BracketExpressionTerm {
-    fn check(&self, c: char) -> bool {
+    pub const fn check(&self, c: char) -> bool {
         return match self {
             BracketExpressionTerm::Single(a) => *a == c,
             BracketExpressionTerm::Range(a, b) => *a <= c && c <= *b,
@@ -365,10 +376,25 @@ impl From<CharClass> for BracketExpressionTerm {
         return BracketExpressionTerm::CharClass(value);
     }
 }
+impl ToTokens for BracketExpressionTerm {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.extend(match self {
+            BracketExpressionTerm::Single(c) => quote! {
+                ::posixere_core::parse_tree::BracketExpressionTerm::Single(#c)
+            },
+            BracketExpressionTerm::Range(a, z) => quote! {
+                ::posixere_core::parse_tree::BracketExpressionTerm::Range(#a, #z)
+            },
+            BracketExpressionTerm::CharClass(char_class) => quote! {
+                ::posixere_core::parse_tree::BracketExpressionTerm::CharClass(#char_class)
+            },
+        });
+    }
+}
 
 /// The characters that can only occur if quoted
 #[inline]
-fn is_special_character(c: char) -> bool {
+const fn is_special_character(c: char) -> bool {
     return c == '^'
         || c == '.'
         || c == '['
@@ -385,7 +411,7 @@ fn is_special_character(c: char) -> bool {
 
 /// The characters that can only occur if quoted
 #[inline]
-fn is_escapable_character(c: char) -> bool {
+const fn is_escapable_character(c: char) -> bool {
     return is_special_character(c) || c == ']' || c == '}';
 }
 

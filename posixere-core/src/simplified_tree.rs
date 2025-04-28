@@ -2,7 +2,7 @@ use crate::parse_tree::*;
 
 /// For translation between our parse tree and https://en.wikipedia.org/wiki/Thompson%27s_construction
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub(crate) enum SimplifiedTreeNode {
+pub enum SimplifiedTreeNode {
     /// Translates to `epsilon`
     Empty,
     Symbol(Atom),
