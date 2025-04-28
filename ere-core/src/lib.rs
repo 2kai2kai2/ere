@@ -1,4 +1,4 @@
-//! This crate provides the core functionality to the `posixere` crate.
+//! This crate provides the core functionality to the `ere` crate.
 
 use proc_macro::TokenStream;
 use quote::quote;

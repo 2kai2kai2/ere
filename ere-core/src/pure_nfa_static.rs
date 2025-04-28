@@ -30,10 +30,10 @@ impl StaticAtom {
     fn serialize_as_token_stream(atom: &Atom) -> proc_macro2::TokenStream {
         return match atom {
             Atom::NormalChar(c) => quote! {
-                posixere_core::pure_nfa_static::StaticAtom::NormalChar(#c)
+                ere_core::pure_nfa_static::StaticAtom::NormalChar(#c)
             },
             Atom::CharClass(char_class) => quote! {
-                posixere_core::pure_nfa_static::StaticAtom::CharClass(#char_class),
+                ere_core::pure_nfa_static::StaticAtom::CharClass(#char_class),
             },
             Atom::MatchingList(bracket_expression_terms) => {
                 let terms: proc_macro2::TokenStream = bracket_expression_terms
@@ -41,8 +41,8 @@ impl StaticAtom {
                     .map(|term| quote! { #term, })
                     .collect();
                 quote! {{
-                    static terms: &'static [posixere_core::parse_tree::BracketExpressionTerm] = &[#terms];
-                    posixere_core::pure_nfa_static::StaticAtom::MatchingList(terms)
+                    static terms: &'static [ere_core::parse_tree::BracketExpressionTerm] = &[#terms];
+                    ere_core::pure_nfa_static::StaticAtom::MatchingList(terms)
                 }}
             }
             Atom::NonmatchingList(bracket_expression_terms) => {
@@ -51,8 +51,8 @@ impl StaticAtom {
                     .map(|term| quote! { #term, })
                     .collect();
                 quote! {{
-                    static terms: &'static [posixere_core::parse_tree::BracketExpressionTerm] = &[#terms];
-                    posixere_core::pure_nfa_static::StaticAtom::NonmatchingList(terms)
+                    static terms: &'static [ere_core::parse_tree::BracketExpressionTerm] = &[#terms];
+                    ere_core::pure_nfa_static::StaticAtom::NonmatchingList(terms)
                 }}
             }
         };
@@ -74,7 +74,7 @@ impl PureNFATransitionStatic {
         let PureNFATransition { from, to, symbol } = transition;
         let symbol = StaticAtom::serialize_as_token_stream(symbol);
         return quote! {
-            posixere_core::pure_nfa_static::PureNFATransitionStatic::__load(
+            ere_core::pure_nfa_static::PureNFATransitionStatic::__load(
                 #from,
                 #to,
                 #symbol,
@@ -160,16 +160,16 @@ impl PureNFAStatic {
             .into_iter()
             .map(|PureNFAEpsilonTransition { from, to }| {
                 quote! {
-                    posixere_core::pure_nfa::PureNFAEpsilonTransition::new(#from, #to),
+                    ere_core::pure_nfa::PureNFAEpsilonTransition::new(#from, #to),
                 }
             })
             .collect();
 
         return quote! {{
-            static transitions: &'static [posixere_core::pure_nfa_static::PureNFATransitionStatic] = &[#transitions_defs];
-            static epsilons: &'static [posixere_core::pure_nfa::PureNFAEpsilonTransition] = &[#epsilon_defs];
+            static transitions: &'static [ere_core::pure_nfa_static::PureNFATransitionStatic] = &[#transitions_defs];
+            static epsilons: &'static [ere_core::pure_nfa::PureNFAEpsilonTransition] = &[#epsilon_defs];
 
-            static static_nfa: posixere_core::pure_nfa_static::PureNFAStatic = posixere_core::pure_nfa_static::PureNFAStatic::__load(transitions, epsilons, #states);
+            static static_nfa: ere_core::pure_nfa_static::PureNFAStatic = ere_core::pure_nfa_static::PureNFAStatic::__load(transitions, epsilons, #states);
             &static_nfa
         }};
     }

@@ -1,12 +1,13 @@
 [package]
-name = "posixere-macros"
+name = "ere-core"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+authors = ["2kai2kai2"]
 
-[lib]
-proc-macro = true
 
 [dependencies]
-posixere-core = { path = "../posixere-core" }
+proc-macro2 = "1.0.95"
 quote = "1.0.38"
 syn = { version = "2.0.96", features = ["parsing"] }
+thiserror = "2.0.11"

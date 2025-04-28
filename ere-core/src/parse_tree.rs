@@ -226,7 +226,7 @@ impl Display for CharClass {
 impl ToTokens for CharClass {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
-            CharClass::Dot => tokens.extend(quote! {::posixere_core::parse_tree::CharClass::Dot}),
+            CharClass::Dot => tokens.extend(quote! {::ere_core::parse_tree::CharClass::Dot}),
         }
     }
 }
@@ -380,13 +380,13 @@ impl ToTokens for BracketExpressionTerm {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         tokens.extend(match self {
             BracketExpressionTerm::Single(c) => quote! {
-                ::posixere_core::parse_tree::BracketExpressionTerm::Single(#c)
+                ::ere_core::parse_tree::BracketExpressionTerm::Single(#c)
             },
             BracketExpressionTerm::Range(a, z) => quote! {
-                ::posixere_core::parse_tree::BracketExpressionTerm::Range(#a, #z)
+                ::ere_core::parse_tree::BracketExpressionTerm::Range(#a, #z)
             },
             BracketExpressionTerm::CharClass(char_class) => quote! {
-                ::posixere_core::parse_tree::BracketExpressionTerm::CharClass(#char_class)
+                ::ere_core::parse_tree::BracketExpressionTerm::CharClass(#char_class)
             },
         });
     }

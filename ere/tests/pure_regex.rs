@@ -1,4 +1,4 @@
-use posixere::*;
+use ere::*;
 
 #[test]
 fn phone_number() {
