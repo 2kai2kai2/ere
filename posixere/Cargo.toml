@@ -1,0 +1,8 @@
+[package]
+name = "posixere"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+posixere-core = { path = "../posixere-core" }
+posixere-macros = { path = "../posixere-macros" }
