@@ -1,4 +1,4 @@
-use ere::*;
+use ere::prelude::*;
 
 #[test]
 fn phone_number() {
