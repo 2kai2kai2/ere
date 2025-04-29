@@ -339,6 +339,9 @@ impl WorkingNFA {
     pub fn new(tree: &SimplifiedTreeNode) -> WorkingNFA {
         let mut nfa = WorkingNFA::build(tree);
 
+        nfa.clean_start_anchors();
+        nfa.clean_end_anchors();
+
         // add loops at start and end in case we lack anchors
         nfa.transitions = nfa.transitions.iter().map(|t| t.add_offset(1)).collect();
         nfa.epsilons = nfa.epsilons.iter().map(|e| e.add_offset(1)).collect();
@@ -357,9 +360,120 @@ impl WorkingNFA {
             Atom::NonmatchingList(Vec::new()),
         ));
 
+        // Then remove redundant transitions from nodes before/after anchors
+        // May include the loops we just added
+        let zero_symbol_states: Vec<bool> =
+            std::iter::zip(nfa.nodes_after_end(), nfa.nodes_before_start())
+                .map(|(a, b)| a || b)
+                .collect();
+        nfa.transitions.retain(|t| !zero_symbol_states[t.from]);
+
+        // Finally, do normal optimization passes
         while nfa.optimize_pass() {}
         nfa.remove_unreachable();
         return nfa;
+    }
+
+    /// Removes start anchors that will never be satisfied
+    /// (basically turning them into a `Never` to allow further optimization)
+    fn clean_start_anchors(&mut self) {
+        let mut zero_len_reachable = vec![false; self.states];
+        zero_len_reachable[0] = true;
+        let mut changed = false;
+        loop {
+            for e in self.epsilons.iter() {
+                if zero_len_reachable[e.from] && !zero_len_reachable[e.to] {
+                    zero_len_reachable[e.to] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+            changed = false;
+        }
+        self.epsilons = self
+            .epsilons
+            .iter()
+            .filter(|t| t.special != EpsilonType::StartAnchor || zero_len_reachable[t.from])
+            .cloned()
+            .collect();
+    }
+
+    /// Removes end anchors that will never be satisfied
+    /// (basically turning them into a `Never` to allow further optimization)    
+    fn clean_end_anchors(&mut self) {
+        let mut zero_len_reachable = vec![false; self.states];
+        zero_len_reachable[self.states - 1] = true;
+        let mut changed = false;
+        loop {
+            for e in self.epsilons.iter() {
+                if !zero_len_reachable[e.from] && zero_len_reachable[e.to] {
+                    zero_len_reachable[e.from] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+            changed = false;
+        }
+        self.epsilons = self
+            .epsilons
+            .iter()
+            .filter(|t| t.special != EpsilonType::EndAnchor || zero_len_reachable[t.to])
+            .cloned()
+            .collect();
+    }
+    /// Finds all nodes that are only ever visited after a `$`.
+    fn nodes_after_end(&self) -> Vec<bool> {
+        let mut nodes = vec![true; self.states];
+        nodes[0] = false;
+        let mut changed = false;
+        loop {
+            for e in self.epsilons.iter() {
+                if !nodes[e.from] && nodes[e.to] && e.special != EpsilonType::EndAnchor {
+                    nodes[e.to] = false;
+                    changed = true;
+                }
+            }
+            for t in self.transitions.iter() {
+                if !nodes[t.from] && nodes[t.to] {
+                    nodes[t.to] = false;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+            changed = false;
+        }
+        return nodes;
+    }
+    /// Finds all nodes that are only ever visited before a `^`.
+    fn nodes_before_start(&self) -> Vec<bool> {
+        let mut nodes = vec![true; self.states];
+        nodes[self.states - 1] = false;
+        let mut changed = false;
+        loop {
+            for e in self.epsilons.iter() {
+                if nodes[e.from] && !nodes[e.to] && e.special != EpsilonType::StartAnchor {
+                    nodes[e.from] = false;
+                    changed = true;
+                }
+            }
+            for t in self.transitions.iter() {
+                if nodes[t.from] && !nodes[t.to] {
+                    nodes[t.from] = false;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+            changed = false;
+        }
+        return nodes;
     }
 
     /// Optimizes the NFA graph
