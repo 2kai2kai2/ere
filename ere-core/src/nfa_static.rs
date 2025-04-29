@@ -2,7 +2,7 @@
 
 use crate::{
     parse_tree::{Atom, BracketExpressionTerm, CharClass},
-    working_nfa::{WorkingEpsilonTransition, WorkingEpsilonType, WorkingNFA, WorkingTransition},
+    working_nfa::{EpsilonTransition, EpsilonType, WorkingNFA, WorkingTransition},
 };
 use quote::quote;
 
@@ -59,64 +59,6 @@ impl AtomStatic {
     }
 }
 
-/// An epsilon transition for the [`WorkingNFA`]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EpsilonTypeStatic {
-    None,
-    StartCapture(usize),
-    EndCapture(usize),
-}
-impl EpsilonTypeStatic {
-    fn serialize_as_token_stream(epsilon_type: &WorkingEpsilonType) -> proc_macro2::TokenStream {
-        return match epsilon_type {
-            WorkingEpsilonType::None => quote! { ::ere_core::nfa_static::EpsilonTypeStatic::None },
-            WorkingEpsilonType::StartAnchor | WorkingEpsilonType::EndAnchor => quote! {
-                compile_error!("StaticNFA does not support anchors--
-                these should have been removed already while it was a WorkingNFA.
-                This may be an internal ere crate bug.");
-            },
-            WorkingEpsilonType::StartCapture(group_num) => quote! {
-                ::ere_core::nfa_static::EpsilonTypeStatic::StartCapture(#group_num)
-            },
-            WorkingEpsilonType::EndCapture(group_num) => quote! {
-                ::ere_core::nfa_static::EpsilonTypeStatic::EndCapture(#group_num)
-            },
-        };
-    }
-}
-
-/// An epsilon transition for the [`WorkingNFA`]
-#[derive(Debug, Clone, Copy)]
-pub struct EpsilonTransitionStatic {
-    pub(crate) from: usize,
-    pub(crate) to: usize,
-    pub(crate) special: EpsilonTypeStatic,
-}
-impl EpsilonTransitionStatic {
-    /// Only intended for internal use by macros.
-    pub const fn __load(
-        from: usize,
-        to: usize,
-        special: EpsilonTypeStatic,
-    ) -> EpsilonTransitionStatic {
-        return EpsilonTransitionStatic { from, to, special };
-    }
-    fn serialize_as_token_stream(
-        transition: &WorkingEpsilonTransition,
-    ) -> proc_macro2::TokenStream {
-        let WorkingEpsilonTransition { from, to, special } = transition;
-        let special = EpsilonTypeStatic::serialize_as_token_stream(special);
-        return quote! {
-            ere_core::nfa_static::EpsilonTransitionStatic::__load(
-                #from,
-                #to,
-                #special,
-            )
-        }
-        .into();
-    }
-}
-
 #[derive(Debug)]
 pub struct NFATransitionStatic {
     pub(crate) from: usize,
@@ -145,7 +87,7 @@ impl NFATransitionStatic {
 #[derive(Debug)]
 pub struct NFAStatic {
     transitions: &'static [NFATransitionStatic],
-    epsilons: &'static [EpsilonTransitionStatic],
+    epsilons: &'static [EpsilonTransition],
     states: usize,
 }
 impl NFAStatic {
@@ -156,11 +98,18 @@ impl NFAStatic {
         list[0] = true;
 
         // Adds all states reachable by epsilon transitions
-        let propogate_epsilon = |list: &mut Vec<bool>| loop {
+        let propogate_epsilon = |list: &mut Vec<bool>, idx: usize| loop {
             let mut has_new = false;
-            for t in self.epsilons {
-                if list[t.from] && !list[t.to] {
-                    list[t.to] = true;
+            for EpsilonTransition { from, to, special } in self.epsilons {
+                if list[*from]
+                    && !list[*to]
+                    && (match special {
+                        EpsilonType::StartAnchor => idx == 0,
+                        EpsilonType::EndAnchor => idx == text.len(),
+                        _ => true,
+                    })
+                {
+                    list[*to] = true;
                     has_new = true;
                 }
             }
@@ -168,9 +117,9 @@ impl NFAStatic {
                 break;
             }
         };
-        propogate_epsilon(&mut list);
 
-        for c in text.chars() {
+        for (i, c) in text.char_indices() {
+            propogate_epsilon(&mut list, i);
             for NFATransitionStatic { from, to, symbol } in self.transitions {
                 if list[*from] && symbol.check(c) {
                     new_list[*to] = true;
@@ -180,15 +129,15 @@ impl NFAStatic {
             list = new_list;
             new_list = tmp;
             new_list.fill(false);
-            propogate_epsilon(&mut list);
         }
+        propogate_epsilon(&mut list, text.len());
         return *list.last().unwrap_or(&false);
     }
 
     /// Only intended for internal use by macros.
     pub const fn __load(
         transitions: &'static [NFATransitionStatic],
-        epsilons: &'static [EpsilonTransitionStatic],
+        epsilons: &'static [EpsilonTransition],
         states: usize,
     ) -> NFAStatic {
         return NFAStatic {
@@ -216,17 +165,12 @@ impl NFAStatic {
                 return quote! { #t, };
             })
             .collect();
-        let epsilon_defs: proc_macro2::TokenStream = epsilons
-            .into_iter()
-            .map(|e| {
-                let e = EpsilonTransitionStatic::serialize_as_token_stream(e);
-                return quote! { #e, };
-            })
-            .collect();
+        let epsilon_defs: proc_macro2::TokenStream =
+            epsilons.into_iter().map(|e| quote! { #e, }).collect();
 
         return quote! {{
             const transitions: &'static [ere_core::nfa_static::NFATransitionStatic] = &[#transitions_defs];
-            const epsilons: &'static [ere_core::nfa_static::EpsilonTransitionStatic] = &[#epsilon_defs];
+            const epsilons: &'static [ere_core::working_nfa::EpsilonTransition] = &[#epsilon_defs];
 
             ere_core::nfa_static::NFAStatic::__load(transitions, epsilons, #states)
         }};
