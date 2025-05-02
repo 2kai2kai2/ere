@@ -3,6 +3,36 @@ use std::fmt::{Display, Write};
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 
+/// On input string `text: &'a str` with options `{<prefix> => T, ..}`,
+/// it returns `Option<(&'a str, T)>` based on which literal prefix is matched
+///
+/// Example:
+/// ```
+/// let text = "asdf";
+/// let test = match_prefix!(text, {
+///     "fdsa" => 0,
+///     "qwerty" => 1,
+///     "as" => 2,
+///     "asd" => 3,
+/// });
+/// assert_eq!(test, Some("df", 2));
+/// ```
+macro_rules! match_prefix {
+    ($text:ident, { }) => (::core::option::Option::None);
+    ($text:ident, {
+        $x:literal => $y:expr,
+        $($xs:literal => $ys:expr,)*
+    }) => {
+        if let ::core::option::Option::Some(rest) = str::strip_prefix($text, $x) {
+            ::core::option::Option::Some((rest, $y))
+        } $(else if let ::core::option::Option::Some(rest) = str::strip_prefix($text, $xs) {
+            ::core::option::Option::Some((rest, $ys))
+        })* else {
+            ::core::option::Option::None
+        }
+    };
+}
+
 /// A represents a [POSIX-compliant ERE](https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html).
 /// Primarily intended for use as a parser.
 pub struct ERE(pub(crate) Vec<EREBranch>);
@@ -207,6 +237,7 @@ impl Display for Quantifier {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum CharClass {
+    /// Matches anything but `NUL` (`'\0'`)
     Dot,
 }
 impl CharClass {
@@ -235,7 +266,7 @@ impl ToTokens for CharClass {
 pub enum Atom {
     /// Includes normal char and escaped chars
     NormalChar(char),
-    CharClass(CharClass), // TODO
+    CharClass(CharClass),
     /// A matching bracket expression
     MatchingList(Vec<BracketExpressionTerm>),
     /// A nonmatching bracket expression
@@ -264,37 +295,45 @@ impl Atom {
             },
             Some('.') => return Some((it.as_str(), CharClass::Dot.into())),
             Some('[') => {
-                let rest = it.as_str();
-                let (rest, end_index, none_of) = if rest.starts_with(']') {
-                    (rest, rest.match_indices(']').nth(1)?.0, false)
-                } else if let Some(rest) = rest.strip_prefix('^') {
-                    if rest.starts_with(']') {
-                        (rest, rest.match_indices(']').nth(1)?.0, true)
-                    } else {
-                        (rest, rest.find(']')?, true)
-                    }
-                } else {
-                    (rest, rest.find(']')?, false)
-                };
-
-                let inside = &rest[..end_index];
-                let rest = &rest[end_index + 1..];
-                let mut it = inside.chars();
+                let mut rest = it.as_str();
                 let mut items = Vec::new();
-
-                // TODO: There's some strangeness with when `-` is allowed. We should handle that.
-                while let Some(first) = it.next() {
-                    match it.clone().next() {
-                        Some('-') => {
-                            it.next();
-                            if let Some(second) = it.next() {
-                                items.push(BracketExpressionTerm::Range(first, second));
-                            } else {
+                let none_of = if let Some(new_rest) = rest.strip_prefix('^') {
+                    rest = new_rest;
+                    true
+                } else {
+                    false
+                };
+                if let Some(new_rest) = rest.strip_prefix(']') {
+                    rest = new_rest;
+                    items.push(BracketExpressionTerm::Single(']'));
+                }
+                loop {
+                    if let Some(new_rest) = rest.strip_prefix(']') {
+                        // End of the bracket expression
+                        rest = new_rest;
+                        break;
+                    } else if let Some((new_rest, class)) = BracketCharClass::take(rest) {
+                        // A bracket char class
+                        rest = new_rest;
+                        items.push(BracketExpressionTerm::CharClass(class));
+                    } else {
+                        // Normal
+                        let mut it = rest.chars();
+                        let first = it.next()?;
+                        rest = it.as_str();
+                        if let '-' = it.next()? {
+                            let second = it.next()?;
+                            rest = it.as_str();
+                            if second == ']' {
+                                // it's just two characters at the end
                                 items.push(BracketExpressionTerm::Single(first));
                                 items.push(BracketExpressionTerm::Single('-'));
+                                break;
+                            } else {
+                                // it's a range
+                                items.push(BracketExpressionTerm::Range(first, second));
                             }
-                        }
-                        _ => {
+                        } else {
                             items.push(BracketExpressionTerm::Single(first));
                         }
                     }
@@ -342,18 +381,143 @@ impl Display for Atom {
         };
     }
 }
+
+/// From https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap09.html#tag_09_03_05
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum BracketCharClass {
+    /// [:alnum:]
+    Alphanumeric,
+    /// [:cntrl:]
+    Control,
+    /// [:lower:]
+    Lower,
+    /// [:space:]
+    Space,
+    /// [:alpha:]
+    Alphabet,
+    /// [:digit:]
+    Digit,
+    /// [:print:]
+    Print,
+    /// [:upper:]
+    Upper,
+    /// [:blank:]
+    Blank,
+    /// [:graph:]
+    Graphic,
+    /// [:punct:]
+    Punctuation,
+    /// [:xdigit:]
+    HexDigit,
+}
+impl BracketCharClass {
+    /// Checks matches to the char classes.
+    pub const fn check_ascii(&self, c: char) -> bool {
+        return match self {
+            BracketCharClass::Alphanumeric => c.is_ascii_alphanumeric(),
+            BracketCharClass::Control => c.is_ascii_control(),
+            BracketCharClass::Lower => c.is_ascii_lowercase(),
+            BracketCharClass::Space => c.is_ascii_whitespace() || c == '\x0b', // POSIX includes vertical tab
+            BracketCharClass::Alphabet => c.is_ascii_alphabetic(),
+            BracketCharClass::Digit => c.is_ascii_digit(),
+            BracketCharClass::Print => matches!(c, '\x20'..='\x7E'),
+            BracketCharClass::Upper => c.is_ascii_uppercase(),
+            BracketCharClass::Blank => c == ' ' || c == '\t',
+            BracketCharClass::Graphic => c.is_ascii_graphic(),
+            BracketCharClass::Punctuation => c.is_ascii_punctuation(),
+            BracketCharClass::HexDigit => c.is_ascii_hexdigit(),
+        };
+    }
+    fn take<'a>(rest: &'a str) -> Option<(&'a str, BracketCharClass)> {
+        let rest = rest.strip_prefix("[:")?;
+        return match_prefix!(rest, {
+            "alnum:]" => BracketCharClass::Alphanumeric,
+            "cntrl:]" => BracketCharClass::Control,
+            "lower:]" => BracketCharClass::Lower,
+            "alpha:]" => BracketCharClass::Alphabet,
+            "digit:]" => BracketCharClass::Digit,
+            "print:]" => BracketCharClass::Print,
+            "upper:]" => BracketCharClass::Upper,
+            "blank:]" => BracketCharClass::Blank,
+            "graph:]" => BracketCharClass::Graphic,
+            "punct:]" => BracketCharClass::Punctuation,
+            "xdigit:]" => BracketCharClass::HexDigit,
+        });
+    }
+}
+impl Display for BracketCharClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return match self {
+            BracketCharClass::Alphanumeric => f.write_str("[:alnum:]"),
+            BracketCharClass::Control => f.write_str("[:cntrl:]"),
+            BracketCharClass::Lower => f.write_str("[:lower:]"),
+            BracketCharClass::Space => f.write_str("[:space:]"),
+            BracketCharClass::Alphabet => f.write_str("[:alpha:]"),
+            BracketCharClass::Digit => f.write_str("[:digit:]"),
+            BracketCharClass::Print => f.write_str("[:print:]"),
+            BracketCharClass::Upper => f.write_str("[:upper:]"),
+            BracketCharClass::Blank => f.write_str("[:blank:]"),
+            BracketCharClass::Graphic => f.write_str("[:graph:]"),
+            BracketCharClass::Punctuation => f.write_str("[:punct:]"),
+            BracketCharClass::HexDigit => f.write_str("[:xdigit:]"),
+        };
+    }
+}
+impl ToTokens for BracketCharClass {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            BracketCharClass::Alphanumeric => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Alphanumeric})
+            }
+            BracketCharClass::Control => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Control})
+            }
+            BracketCharClass::Lower => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Lower})
+            }
+            BracketCharClass::Space => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Space})
+            }
+            BracketCharClass::Alphabet => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Alphabet})
+            }
+            BracketCharClass::Digit => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Digit})
+            }
+            BracketCharClass::Print => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Print})
+            }
+            BracketCharClass::Upper => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Upper})
+            }
+            BracketCharClass::Blank => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Blank})
+            }
+            BracketCharClass::Graphic => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Graph})
+            }
+            BracketCharClass::Punctuation => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Punctuation})
+            }
+            BracketCharClass::HexDigit => {
+                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::XDigit})
+            }
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum BracketExpressionTerm {
     Single(char),
     Range(char, char),
-    CharClass(CharClass),
+    CharClass(BracketCharClass),
 }
 impl BracketExpressionTerm {
     pub const fn check(&self, c: char) -> bool {
         return match self {
             BracketExpressionTerm::Single(a) => *a == c,
             BracketExpressionTerm::Range(a, b) => *a <= c && c <= *b,
-            BracketExpressionTerm::CharClass(class) => class.check(c),
+            BracketExpressionTerm::CharClass(class) => class.check_ascii(c),
         };
     }
 }
@@ -371,8 +535,8 @@ impl From<char> for BracketExpressionTerm {
         return BracketExpressionTerm::Single(value);
     }
 }
-impl From<CharClass> for BracketExpressionTerm {
-    fn from(value: CharClass) -> Self {
+impl From<BracketCharClass> for BracketExpressionTerm {
+    fn from(value: BracketCharClass) -> Self {
         return BracketExpressionTerm::CharClass(value);
     }
 }
@@ -435,6 +599,9 @@ mod tests {
         test_reconstruction("a[|]");
         test_reconstruction("[^]a-z1-4A-X-]asdf");
         test_reconstruction("cd[X-]er");
+
+        test_reconstruction("my word is [[:alnum:]_]");
+        test_reconstruction("my word is [[:lower:][:digit:]_]");
 
         test_reconstruction("a|b");
         test_reconstruction("a|b|c");

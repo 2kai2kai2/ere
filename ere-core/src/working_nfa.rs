@@ -903,7 +903,7 @@ mod tests {
         let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere);
         assert_eq!(capture_groups, 1);
         let nfa = WorkingNFA::new(&tree);
-        println!("{}", nfa.to_tikz(true));
+        // println!("{}", nfa.to_tikz(true));
 
         assert!(nfa.test("a"));
         assert!(nfa.test("b"));
@@ -916,6 +916,28 @@ mod tests {
         assert!(!nfa.test("c"));
         assert!(!nfa.test("bc"));
         assert!(!nfa.test("bcccccc"));
+        assert!(!nfa.test("d"));
+    }
+
+    #[test]
+    fn range_digit() {
+        let ere = ERE::parse_str(r"^[[:digit:].]$").unwrap();
+        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere);
+        assert_eq!(capture_groups, 1);
+        let nfa = WorkingNFA::new(&tree);
+        // println!("{}", nfa.to_tikz(true));
+
+        assert!(nfa.test("0"));
+        assert!(nfa.test("1"));
+        assert!(nfa.test("9"));
+        assert!(nfa.test("."));
+
+        assert!(!nfa.test(""));
+        assert!(!nfa.test("a"));
+        assert!(!nfa.test("11"));
+        assert!(!nfa.test("1."));
+        assert!(!nfa.test(".2"));
+        assert!(!nfa.test("09"));
         assert!(!nfa.test("d"));
     }
 }
