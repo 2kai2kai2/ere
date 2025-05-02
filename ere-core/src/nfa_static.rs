@@ -27,7 +27,7 @@ impl AtomStatic {
         };
     }
     /// Serialize as [`Atom`], deserialize as [`StaticAtom`]
-    fn serialize_as_token_stream(atom: &Atom) -> proc_macro2::TokenStream {
+    pub(crate) fn serialize_as_token_stream(atom: &Atom) -> proc_macro2::TokenStream {
         return match atom {
             Atom::NormalChar(c) => quote! {
                 ere_core::nfa_static::AtomStatic::NormalChar(#c)
@@ -153,8 +153,6 @@ impl<const N: usize> NFAStatic<N> {
 
 /// Converts a [`WorkingNFA`] into a format that, when returned by a proc macro, will
 /// create the corresponding [`NFAStatic`].
-///
-/// Warning: `nfa` should have anchors removed already.
 pub(crate) fn serialize_nfa_as_token_stream(nfa: &WorkingNFA) -> proc_macro2::TokenStream {
     let WorkingNFA {
         transitions,
@@ -162,15 +160,7 @@ pub(crate) fn serialize_nfa_as_token_stream(nfa: &WorkingNFA) -> proc_macro2::To
         states,
     } = nfa;
 
-    let capture_groups = epsilons
-        .iter()
-        .map(|eps| match eps.special {
-            EpsilonType::StartCapture(n) => n,
-            _ => 0,
-        })
-        .max()
-        .unwrap_or(0)
-        + 1;
+    let capture_groups = nfa.num_capture_groups();
     let transitions_defs: proc_macro2::TokenStream = transitions
         .into_iter()
         .map(|t| {

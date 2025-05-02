@@ -671,6 +671,20 @@ impl WorkingNFA {
         }
     }
 
+    /// Finds the number of capture groups in this NFA
+    pub fn num_capture_groups(&self) -> usize {
+        return self
+            .epsilons
+            .iter()
+            .map(|eps| match eps.special {
+                EpsilonType::StartCapture(n) => n,
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
+    }
+
     /// Writes a LaTeX TikZ representation to visualize the graph.
     ///
     /// If `include_doc` is `true`, will include the headers.

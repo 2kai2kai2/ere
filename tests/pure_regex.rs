@@ -17,6 +17,69 @@ fn phone_number() {
 }
 
 #[test]
+fn byte_value_exec() {
+    const BYTE_REGEX: Regex<2> =
+        compile_regex!(r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$");
+
+    assert_eq!(BYTE_REGEX.exec("1"), Some([Some("1"), Some("1")]),);
+    assert_eq!(BYTE_REGEX.exec("255"), Some([Some("255"), Some("255")]),);
+    assert_eq!(BYTE_REGEX.exec("0"), Some([Some("0"), Some("0")]),);
+    assert_eq!(BYTE_REGEX.exec("12"), Some([Some("12"), Some("12"),]),);
+
+    assert_eq!(BYTE_REGEX.exec("abcd"), None);
+    assert_eq!(BYTE_REGEX.exec("00"), None);
+    assert_eq!(BYTE_REGEX.exec("256"), None);
+}
+
+#[test]
+fn ipv4_exec() {
+    const IPV4_REGEX: Regex<5> = compile_regex!(
+        r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
+    );
+
+    assert_eq!(
+        IPV4_REGEX.exec("1.1.1.1"),
+        Some([Some("1.1.1.1"), Some("1"), Some("1"), Some("1"), Some("1")]),
+    );
+    assert_eq!(
+        IPV4_REGEX.exec("255.255.255.255"),
+        Some([
+            Some("255.255.255.255"),
+            Some("255"),
+            Some("255"),
+            Some("255"),
+            Some("255")
+        ]),
+    );
+    assert_eq!(
+        IPV4_REGEX.exec("192.168.0.1"),
+        Some([
+            Some("192.168.0.1"),
+            Some("192"),
+            Some("168"),
+            Some("0"),
+            Some("1")
+        ]),
+    );
+    assert_eq!(
+        IPV4_REGEX.exec("12.34.56.78"),
+        Some([
+            Some("12.34.56.78"),
+            Some("12"),
+            Some("34"),
+            Some("56"),
+            Some("78")
+        ]),
+    );
+
+    assert_eq!(IPV4_REGEX.exec("abcd"), None);
+    assert_eq!(IPV4_REGEX.exec("1.1.1"), None);
+    assert_eq!(IPV4_REGEX.exec("..."), None);
+    assert_eq!(IPV4_REGEX.exec("1::"), None);
+    assert_eq!(IPV4_REGEX.exec("256.0.0.0"), None);
+}
+
+#[test]
 fn needle() {
     const NEEDLE_REGEX: Regex = compile_regex!(r"nee+dle");
 
