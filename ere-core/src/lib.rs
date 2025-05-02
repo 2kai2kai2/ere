@@ -9,15 +9,18 @@ pub mod parse_tree;
 pub mod simplified_tree;
 pub mod working_nfa;
 
-enum RegexEngines {
-    NFA(nfa_static::NFAStatic),
+enum RegexEngines<const N: usize> {
+    NFA(nfa_static::NFAStatic<N>),
 }
 
 /// A regular expression (specifically, a [POSIX ERE](https://en.wikibooks.org/wiki/Regular_Expressions/POSIX-Extended_Regular_Expressions)).
 ///
 /// Internally, this may contain one of several engines depending on the expression.
-pub struct Regex(RegexEngines);
-impl Regex {
+///
+/// The const generic `N` represents the number of capture groups (including capture group 0 which is the entire expression).
+/// It defaults to `1` (for just capture group 0), but you will need to specify it in the type for expressions with more capture groups.
+pub struct Regex<const N: usize = 1>(RegexEngines<N>);
+impl<const N: usize> Regex<N> {
     /// Returns whether or not the text is matched by the regular expression.
     pub fn test(&self, text: &str) -> bool {
         return match &self.0 {
@@ -26,7 +29,7 @@ impl Regex {
     }
 }
 
-pub const fn __construct_nfa_regex(nfa: nfa_static::NFAStatic) -> Regex {
+pub const fn __construct_nfa_regex<const N: usize>(nfa: nfa_static::NFAStatic<N>) -> Regex<N> {
     return Regex(RegexEngines::NFA(nfa));
 }
 
@@ -35,7 +38,7 @@ pub fn __compile_regex(stream: TokenStream) -> TokenStream {
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
 
-    let serialized_nfa = nfa_static::NFAStatic::serialize_as_token_stream(&nfa);
+    let serialized_nfa = nfa_static::serialize_nfa_as_token_stream(&nfa);
 
     return quote! {
         ::ere_core::__construct_nfa_regex(#serialized_nfa)

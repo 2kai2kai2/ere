@@ -2,7 +2,7 @@ use ere::prelude::*;
 
 #[test]
 fn phone_number() {
-    const PHONE_REGEX: Regex = compile_regex!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$");
+    const PHONE_REGEX: Regex<2> = compile_regex!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$");
 
     assert!(PHONE_REGEX.test("012-345-6789"));
     assert!(PHONE_REGEX.test("987-654-3210"));

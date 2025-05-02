@@ -84,13 +84,16 @@ impl NFATransitionStatic {
     }
 }
 
+/// The statically allocated representation of an NFA
+///
+/// Generic `N` represents the number of capture groups (will always be at least 1)
 #[derive(Debug)]
-pub struct NFAStatic {
+pub struct NFAStatic<const N: usize> {
     transitions: &'static [NFATransitionStatic],
     epsilons: &'static [EpsilonTransition],
     states: usize,
 }
-impl NFAStatic {
+impl<const N: usize> NFAStatic<N> {
     /// Using the classical NFA algorithm.
     pub fn test(&self, text: &str) -> bool {
         let mut list = vec![false; self.states];
@@ -139,40 +142,49 @@ impl NFAStatic {
         transitions: &'static [NFATransitionStatic],
         epsilons: &'static [EpsilonTransition],
         states: usize,
-    ) -> NFAStatic {
+    ) -> NFAStatic<N> {
         return NFAStatic {
             transitions,
             epsilons,
             states,
         };
     }
+}
 
-    /// Converts a [`WorkingNFA`] into a format that, when returned by a proc macro, will
-    /// create the corresponding [`NFAStatic`].
-    ///
-    /// Warning: `nfa` should have anchors removed already.
-    pub(crate) fn serialize_as_token_stream(nfa: &WorkingNFA) -> proc_macro2::TokenStream {
-        let WorkingNFA {
-            transitions,
-            epsilons,
-            states,
-        } = nfa;
+/// Converts a [`WorkingNFA`] into a format that, when returned by a proc macro, will
+/// create the corresponding [`NFAStatic`].
+///
+/// Warning: `nfa` should have anchors removed already.
+pub(crate) fn serialize_nfa_as_token_stream(nfa: &WorkingNFA) -> proc_macro2::TokenStream {
+    let WorkingNFA {
+        transitions,
+        epsilons,
+        states,
+    } = nfa;
 
-        let transitions_defs: proc_macro2::TokenStream = transitions
-            .into_iter()
-            .map(|t| {
-                let t = NFATransitionStatic::serialize_as_token_stream(t);
-                return quote! { #t, };
-            })
-            .collect();
-        let epsilon_defs: proc_macro2::TokenStream =
-            epsilons.into_iter().map(|e| quote! { #e, }).collect();
+    let capture_groups = epsilons
+        .iter()
+        .map(|eps| match eps.special {
+            EpsilonType::StartCapture(n) => n,
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let transitions_defs: proc_macro2::TokenStream = transitions
+        .into_iter()
+        .map(|t| {
+            let t = NFATransitionStatic::serialize_as_token_stream(t);
+            return quote! { #t, };
+        })
+        .collect();
+    let epsilon_defs: proc_macro2::TokenStream =
+        epsilons.into_iter().map(|e| quote! { #e, }).collect();
 
-        return quote! {{
-            const transitions: &'static [ere_core::nfa_static::NFATransitionStatic] = &[#transitions_defs];
-            const epsilons: &'static [ere_core::working_nfa::EpsilonTransition] = &[#epsilon_defs];
+    return quote! {{
+        const transitions: &'static [ere_core::nfa_static::NFATransitionStatic] = &[#transitions_defs];
+        const epsilons: &'static [ere_core::working_nfa::EpsilonTransition] = &[#epsilon_defs];
 
-            ere_core::nfa_static::NFAStatic::__load(transitions, epsilons, #states)
-        }};
-    }
+        ere_core::nfa_static::NFAStatic::<#capture_groups>::__load(transitions, epsilons, #states)
+    }};
 }
