@@ -1,4 +1,4 @@
-use crate::parse_tree::*;
+use crate::{config::Config, parse_tree::*};
 
 /// For translation between our parse tree and https://en.wikipedia.org/wiki/Thompson%27s_construction
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -12,16 +12,17 @@ pub enum SimplifiedTreeNode {
     Concat(Vec<SimplifiedTreeNode>),
     /// `Repeat(child, times)`
     Repeat(Box<SimplifiedTreeNode>, usize),
-    /// `UpTo(child, max_times)`
-    UpTo(Box<SimplifiedTreeNode>, usize),
-    Star(Box<SimplifiedTreeNode>),
+    /// `UpTo(child, max_times, longest)`
+    UpTo(Box<SimplifiedTreeNode>, usize, bool),
+    /// `Star(child, longest)`
+    Star(Box<SimplifiedTreeNode>, bool),
     Start,
     End,
     Never,
 }
 impl SimplifiedTreeNode {
-    pub fn optional(self) -> SimplifiedTreeNode {
-        return self.union(SimplifiedTreeNode::Empty);
+    pub fn optional(self, longest: bool) -> SimplifiedTreeNode {
+        return self.upto(1, longest);
     }
     pub fn union(self, other: SimplifiedTreeNode) -> SimplifiedTreeNode {
         if let SimplifiedTreeNode::Union(mut u) = self {
@@ -40,11 +41,11 @@ impl SimplifiedTreeNode {
     pub fn repeat(self, count: usize) -> SimplifiedTreeNode {
         return SimplifiedTreeNode::Repeat(self.into(), count);
     }
-    pub fn upto(self, count: usize) -> SimplifiedTreeNode {
-        return SimplifiedTreeNode::UpTo(self.into(), count);
+    pub fn upto(self, count: usize, longest: bool) -> SimplifiedTreeNode {
+        return SimplifiedTreeNode::UpTo(self.into(), count, longest);
     }
-    pub fn star(self) -> SimplifiedTreeNode {
-        return SimplifiedTreeNode::Star(self.into());
+    pub fn star(self, longest: bool) -> SimplifiedTreeNode {
+        return SimplifiedTreeNode::Star(self.into(), longest);
     }
 
     // /// A non-optimized, backtracking implementation
@@ -92,51 +93,69 @@ impl SimplifiedTreeNode {
     // }
 }
 impl SimplifiedTreeNode {
-    fn from_sub_ere(value: &ERE, mut group_num: usize) -> (SimplifiedTreeNode, usize) {
+    fn from_sub_ere(
+        value: &ERE,
+        mut group_num: usize,
+        config: &Config,
+    ) -> (SimplifiedTreeNode, usize) {
         let parts = value
             .0
             .iter()
             .map(|part| {
                 let (new_node, new_group_num) =
-                    SimplifiedTreeNode::from_ere_branch(&part, group_num);
+                    SimplifiedTreeNode::from_ere_branch(&part, group_num, config);
                 group_num = new_group_num;
                 new_node
             })
             .collect();
         return (SimplifiedTreeNode::Union(parts), group_num);
     }
-    fn from_ere_branch(value: &EREBranch, mut group_num: usize) -> (SimplifiedTreeNode, usize) {
+    fn from_ere_branch(
+        value: &EREBranch,
+        mut group_num: usize,
+        config: &Config,
+    ) -> (SimplifiedTreeNode, usize) {
         let parts = value
             .0
             .iter()
             .map(|part| {
-                let (new_node, new_group_num) = SimplifiedTreeNode::from_ere_part(&part, group_num);
+                let (new_node, new_group_num) =
+                    SimplifiedTreeNode::from_ere_part(&part, group_num, config);
                 group_num = new_group_num;
                 new_node
             })
             .collect();
         return (SimplifiedTreeNode::Concat(parts), group_num);
     }
-    fn from_ere_part(value: &EREPart, group_num: usize) -> (SimplifiedTreeNode, usize) {
+    fn from_ere_part(
+        value: &EREPart,
+        group_num: usize,
+        config: &Config,
+    ) -> (SimplifiedTreeNode, usize) {
         return match value {
-            EREPart::Single(expr) => SimplifiedTreeNode::from_ere_expression(expr, group_num),
+            EREPart::Single(expr) => {
+                SimplifiedTreeNode::from_ere_expression(expr, group_num, config)
+            }
             EREPart::Quantified(expr, quantifier) => {
-                let (child, group_num) = SimplifiedTreeNode::from_ere_expression(expr, group_num);
-                let part = match quantifier {
-                    Quantifier::Star => child.star(),
-                    Quantifier::Plus => child.clone().concat(child.star()),
-                    Quantifier::QuestionMark => child.optional(),
-                    Quantifier::Multiple(n) => child.repeat(*n as usize),
-                    Quantifier::Range(n, None) => {
-                        child.clone().repeat(*n as usize).concat(child.star())
-                    }
-                    Quantifier::Range(n, Some(m)) => match m.checked_sub(*n) {
+                let (child, group_num) =
+                    SimplifiedTreeNode::from_ere_expression(expr, group_num, config);
+                let longest = config.quantifiers_prefer_longest() ^ quantifier.alt;
+                let part = match &quantifier.quantifier {
+                    QuantifierType::Star => child.star(quantifier.alt),
+                    QuantifierType::Plus => child.clone().concat(child.star(longest)),
+                    QuantifierType::QuestionMark => child.optional(longest),
+                    QuantifierType::Multiple(n) => child.repeat(*n as usize),
+                    QuantifierType::Range(n, None) => child
+                        .clone()
+                        .repeat(*n as usize)
+                        .concat(child.star(longest)),
+                    QuantifierType::Range(n, Some(m)) => match m.checked_sub(*n) {
                         None => SimplifiedTreeNode::Never,
                         Some(0) => child.repeat(*n as usize),
                         Some(r) => child
                             .clone()
                             .repeat(*n as usize)
-                            .concat(child.upto(r as usize)),
+                            .concat(child.upto(r as usize, longest)),
                     },
                 };
                 (part, group_num)
@@ -145,12 +164,16 @@ impl SimplifiedTreeNode {
             EREPart::End => (SimplifiedTreeNode::End, group_num),
         };
     }
-    fn from_ere_expression(value: &EREExpression, group_num: usize) -> (SimplifiedTreeNode, usize) {
+    fn from_ere_expression(
+        value: &EREExpression,
+        group_num: usize,
+        config: &Config,
+    ) -> (SimplifiedTreeNode, usize) {
         return match value {
             EREExpression::Atom(atom) => (atom.clone().into(), group_num),
             EREExpression::Subexpression(ere) => {
                 let (capture, next_group_num) =
-                    SimplifiedTreeNode::from_sub_ere(ere, group_num + 1);
+                    SimplifiedTreeNode::from_sub_ere(ere, group_num + 1, config);
                 (
                     SimplifiedTreeNode::Capture(capture.into(), group_num),
                     next_group_num,
@@ -159,14 +182,14 @@ impl SimplifiedTreeNode {
         };
     }
     /// Returns the simplified tree, along with the number of capture groups (full expression is group 0)
-    pub fn from_ere(value: &ERE) -> (SimplifiedTreeNode, usize) {
-        let (root, groups) = SimplifiedTreeNode::from_sub_ere(value, 1);
+    pub fn from_ere(value: &ERE, config: &Config) -> (SimplifiedTreeNode, usize) {
+        let (root, groups) = SimplifiedTreeNode::from_sub_ere(value, 1, config);
         return (SimplifiedTreeNode::Capture(Box::new(root), 0), groups);
     }
 }
 impl From<ERE> for SimplifiedTreeNode {
     fn from(value: ERE) -> Self {
-        return SimplifiedTreeNode::from_ere(&value).0;
+        return SimplifiedTreeNode::from_ere(&value, &Config::default()).0;
     }
 }
 impl From<Atom> for SimplifiedTreeNode {

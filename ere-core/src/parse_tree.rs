@@ -162,7 +162,7 @@ impl Display for EREExpression {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(crate) enum Quantifier {
+pub(crate) enum QuantifierType {
     Star,
     Plus,
     QuestionMark,
@@ -172,65 +172,106 @@ pub(crate) enum Quantifier {
     Range(u32, Option<u32>),
 }
 
-impl Quantifier {
+impl QuantifierType {
     /// The minimum this quantifier matches, inclusive
     #[inline]
     const fn min(&self) -> u32 {
         return match self {
-            Quantifier::Star => 0,
-            Quantifier::Plus => 1,
-            Quantifier::QuestionMark => 0,
-            Quantifier::Multiple(n) => *n,
-            Quantifier::Range(n, _) => *n,
+            QuantifierType::Star => 0,
+            QuantifierType::Plus => 1,
+            QuantifierType::QuestionMark => 0,
+            QuantifierType::Multiple(n) => *n,
+            QuantifierType::Range(n, _) => *n,
         };
     }
     /// The maximum this quantifier matches, inclusive. If `None`, it is unbounded
     #[inline]
     const fn max(&self) -> Option<u32> {
         return match self {
-            Quantifier::Star => None,
-            Quantifier::Plus => None,
-            Quantifier::QuestionMark => Some(1),
-            Quantifier::Multiple(n) => Some(*n),
-            Quantifier::Range(_, m) => *m,
+            QuantifierType::Star => None,
+            QuantifierType::Plus => None,
+            QuantifierType::QuestionMark => Some(1),
+            QuantifierType::Multiple(n) => Some(*n),
+            QuantifierType::Range(_, m) => *m,
         };
     }
+}
+impl Display for QuantifierType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return match self {
+            QuantifierType::Star => f.write_char('*'),
+            QuantifierType::Plus => f.write_char('+'),
+            QuantifierType::QuestionMark => f.write_char('?'),
+            QuantifierType::Multiple(n) => write!(f, "{{{n}}}"),
+            QuantifierType::Range(n, None) => write!(f, "{{{n},}}"),
+            QuantifierType::Range(n, Some(m)) => write!(f, "{{{n},{m}}}"),
+        };
+    }
+}
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) struct Quantifier {
+    pub quantifier: QuantifierType,
+    /// By default, (unless the `REG_MINIMAL` flag is set), quantifiers should prefer the longest valid
+    /// match for quantifiers. However, if an additional `?` occurs after the quantifier, it should prefer the
+    /// shortest (or longest if `REG_MINIMAL` makes default shortest).
+    pub alt: bool,
+}
+impl Quantifier {
     #[inline]
     fn take<'a>(rest: &'a str) -> Option<(&'a str, Quantifier)> {
         let mut it = rest.chars();
-        match it.next() {
-            Some('*') => return Some((it.as_str(), Quantifier::Star)),
-            Some('+') => return Some((it.as_str(), Quantifier::Plus)),
-            Some('?') => return Some((it.as_str(), Quantifier::QuestionMark)),
+        let (rest, quantifier) = match it.next() {
+            Some('*') => (it.as_str(), QuantifierType::Star),
+            Some('+') => (it.as_str(), QuantifierType::Plus),
+            Some('?') => (it.as_str(), QuantifierType::QuestionMark),
             Some('{') => {
                 let (inside, rest) = it.as_str().split_once('}')?;
                 match inside.split_once(',') {
-                    None => return Some((rest, Quantifier::Multiple(inside.parse().ok()?))),
-                    Some((min, "")) => {
-                        return Some((rest, Quantifier::Range(min.parse().ok()?, None)))
-                    }
-                    Some((min, max)) => {
-                        return Some((
-                            rest,
-                            Quantifier::Range(min.parse().ok()?, Some(max.parse().ok()?)),
-                        ))
-                    }
+                    None => (rest, QuantifierType::Multiple(inside.parse().ok()?)),
+                    Some((min, "")) => (rest, QuantifierType::Range(min.parse().ok()?, None)),
+                    Some((min, max)) => (
+                        rest,
+                        QuantifierType::Range(min.parse().ok()?, Some(max.parse().ok()?)),
+                    ),
                 }
             }
             _ => return None,
+        };
+        if let Some(rest) = rest.strip_prefix('?') {
+            return Some((
+                rest,
+                Quantifier {
+                    quantifier,
+                    alt: true,
+                },
+            ));
+        } else {
+            return Some((
+                rest,
+                Quantifier {
+                    quantifier,
+                    alt: false,
+                },
+            ));
         }
     }
 }
 impl Display for Quantifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return match self {
-            Quantifier::Star => f.write_char('*'),
-            Quantifier::Plus => f.write_char('+'),
-            Quantifier::QuestionMark => f.write_char('?'),
-            Quantifier::Multiple(n) => write!(f, "{{{n}}}"),
-            Quantifier::Range(n, None) => write!(f, "{{{n},}}"),
-            Quantifier::Range(n, Some(m)) => write!(f, "{{{n},{m}}}"),
+        self.quantifier.fmt(f)?;
+        if self.alt {
+            return f.write_char('?');
+        } else {
+            return Ok(());
+        }
+    }
+}
+impl From<QuantifierType> for Quantifier {
+    fn from(quantifier: QuantifierType) -> Self {
+        return Quantifier {
+            quantifier,
+            alt: false,
         };
     }
 }
@@ -616,23 +657,32 @@ mod tests {
     #[test]
     fn parse_quantifiers() {
         assert_eq!(Quantifier::take(""), None);
-        assert_eq!(Quantifier::take("+asdf"), Some(("asdf", Quantifier::Plus)));
-        assert_eq!(Quantifier::take("*"), Some(("", Quantifier::Star)));
+        assert_eq!(
+            Quantifier::take("+asdf"),
+            Some(("asdf", QuantifierType::Plus.into()))
+        );
+        assert_eq!(
+            Quantifier::take("*"),
+            Some(("", QuantifierType::Star.into()))
+        );
         assert_eq!(Quantifier::take("e?"), None);
         assert_eq!(Quantifier::take("{"), None);
         assert_eq!(Quantifier::take("{}"), None);
-        assert_eq!(Quantifier::take("{1}"), Some(("", Quantifier::Multiple(1))));
+        assert_eq!(
+            Quantifier::take("{1}"),
+            Some(("", QuantifierType::Multiple(1).into()))
+        );
         assert_eq!(
             Quantifier::take("{9}ee"),
-            Some(("ee", Quantifier::Multiple(9)))
+            Some(("ee", QuantifierType::Multiple(9).into()))
         );
         assert_eq!(
             Quantifier::take("{10,}ee"),
-            Some(("ee", Quantifier::Range(10, None)))
+            Some(("ee", QuantifierType::Range(10, None).into()))
         );
         assert_eq!(
             Quantifier::take("{0,11}ef"),
-            Some(("ef", Quantifier::Range(0, Some(11))))
+            Some(("ef", QuantifierType::Range(0, Some(11)).into()))
         );
         assert_eq!(Quantifier::take("{0,e11}ef"), None);
         assert_eq!(Quantifier::take("{0;11}ef"), None);

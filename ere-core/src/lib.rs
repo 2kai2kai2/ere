@@ -4,6 +4,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 extern crate proc_macro;
 
+pub mod config;
 pub mod nfa_static;
 pub mod parse_tree;
 pub mod pike_vm;

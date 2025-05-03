@@ -120,7 +120,7 @@ impl std::fmt::Display for WorkingTransition {
 }
 
 /// Each NFA has one start state (`0`) and one accept state (`states - 1`)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorkingNFA {
     pub(crate) transitions: Vec<WorkingTransition>,
     pub(crate) epsilons: Vec<EpsilonTransition>,
@@ -329,8 +329,8 @@ impl WorkingNFA {
             }
             SimplifiedTreeNode::Concat(nodes) => WorkingNFA::build_concat(nodes),
             SimplifiedTreeNode::Repeat(tree, times) => WorkingNFA::build_repeat(tree, *times),
-            SimplifiedTreeNode::UpTo(tree, times) => WorkingNFA::build_upto(tree, *times),
-            SimplifiedTreeNode::Star(tree) => WorkingNFA::build_star(tree),
+            SimplifiedTreeNode::UpTo(tree, times, _) => WorkingNFA::build_upto(tree, *times),
+            SimplifiedTreeNode::Star(tree, _) => WorkingNFA::build_star(tree),
             SimplifiedTreeNode::Start => WorkingNFA::build_start(),
             SimplifiedTreeNode::End => WorkingNFA::build_end(),
             SimplifiedTreeNode::Never => WorkingNFA::build_never(),
@@ -827,7 +827,7 @@ impl std::fmt::Display for WorkingNFA {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse_tree::ERE;
+    use crate::{config::Config, parse_tree::ERE};
 
     #[test]
     fn abbc_raw() {
@@ -856,7 +856,7 @@ mod tests {
     #[test]
     fn phone_number() {
         let ere = ERE::parse_str(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$").unwrap();
-        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere);
+        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere, &Config::default());
         assert_eq!(capture_groups, 2);
         let nfa = WorkingNFA::new(&tree);
         // println!("{}", nfa.to_tikz(true));
@@ -876,7 +876,7 @@ mod tests {
     #[test]
     fn double_loop() {
         let ere = ERE::parse_str(r"^.*(.*)*$").unwrap();
-        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere);
+        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere, &Config::default());
         assert_eq!(capture_groups, 2);
         let nfa = WorkingNFA::new(&tree);
         // println!("{}", nfa.to_tikz(true));
@@ -892,7 +892,7 @@ mod tests {
     #[test]
     fn good_anchored_start() {
         let ere = ERE::parse_str(r"^a|b*^c|d^|n").unwrap();
-        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere);
+        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere, &Config::default());
         assert_eq!(capture_groups, 1);
         let nfa = WorkingNFA::new(&tree);
         // println!("{}", nfa.to_tikz(true));
@@ -914,7 +914,7 @@ mod tests {
     #[test]
     fn good_anchored_end() {
         let ere = ERE::parse_str(r"a$|b$c*|$d|n").unwrap();
-        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere);
+        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere, &Config::default());
         assert_eq!(capture_groups, 1);
         let nfa = WorkingNFA::new(&tree);
         // println!("{}", nfa.to_tikz(true));
@@ -936,7 +936,7 @@ mod tests {
     #[test]
     fn range_digit() {
         let ere = ERE::parse_str(r"^[[:digit:].]$").unwrap();
-        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere);
+        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere, &Config::default());
         assert_eq!(capture_groups, 1);
         let nfa = WorkingNFA::new(&tree);
         // println!("{}", nfa.to_tikz(true));
