@@ -65,12 +65,27 @@ fn compute_excluded_states(nfa: &WorkingNFA) -> Vec<bool> {
 /// Assumes the `VMStates` enum is already created locally in the token stream
 ///
 /// Creates the function for running symbol transitions on the pike VM
-fn serialize_pike_vm_symbol_propogation(nfa: &WorkingNFA) -> proc_macro2::TokenStream {
+fn serialize_pike_vm_symbol_propogation(
+    nfa: &WorkingNFA,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let WorkingNFA { states } = nfa;
     let capture_groups = nfa.num_capture_groups();
     let excluded_states = compute_excluded_states(nfa);
 
-    fn make_symbol_transition(t: &WorkingTransition) -> proc_macro2::TokenStream {
+    fn make_symbol_transition_test(t: &WorkingTransition) -> proc_macro2::TokenStream {
+        let WorkingTransition { symbol, to } = t;
+        let symbol = nfa_static::AtomStatic::serialize_as_token_stream(symbol);
+        return quote! {
+            {
+                let symbol = #symbol;
+                if symbol.check(c) {
+                    new_list[#to] = true;
+                }
+            }
+        };
+    }
+
+    fn make_symbol_transition_exec(t: &WorkingTransition) -> proc_macro2::TokenStream {
         let WorkingTransition { symbol, to } = t;
         let symbol = nfa_static::AtomStatic::serialize_as_token_stream(symbol);
         let to_label = vmstate_label(*to);
@@ -89,7 +104,26 @@ fn serialize_pike_vm_symbol_propogation(nfa: &WorkingNFA) -> proc_macro2::TokenS
         };
     }
 
-    let transition_symbols_defs: proc_macro2::TokenStream = states
+    let transition_symbols_defs_test: proc_macro2::TokenStream = states
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !excluded_states[*i])
+        .map(|(i, state)| {
+            let state_transitions: proc_macro2::TokenStream = state
+                .transitions
+                .iter()
+                .map(make_symbol_transition_test)
+                .collect();
+
+            return quote! {
+                if list[#i] {
+                    #state_transitions
+                }
+            };
+        })
+        .collect();
+
+    let transition_symbols_defs_exec: proc_macro2::TokenStream = states
         .iter()
         .enumerate()
         .filter(|(i, _)| !excluded_states[*i])
@@ -98,7 +132,7 @@ fn serialize_pike_vm_symbol_propogation(nfa: &WorkingNFA) -> proc_macro2::TokenS
             let state_transitions: proc_macro2::TokenStream = state
                 .transitions
                 .iter()
-                .map(make_symbol_transition)
+                .map(make_symbol_transition_exec)
                 .collect();
 
             return quote! {
@@ -109,129 +143,197 @@ fn serialize_pike_vm_symbol_propogation(nfa: &WorkingNFA) -> proc_macro2::TokenS
         })
         .collect();
 
-    return quote! {
-        fn transition_symbols(
+    let transition_symbols_test = quote! {
+        fn transition_symbols_test(
+            list: &[bool],
+            new_list: &mut [bool],
+            c: char,
+        ) {
+            #transition_symbols_defs_test
+        }
+    };
+    let transition_symbols_exec = quote! {
+        fn transition_symbols_exec(
             threads: &[::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>],
             c: char,
         ) -> ::std::vec::Vec<::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>> {
             let mut out = ::std::vec::Vec::<::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>>::new();
             for thread in threads {
                 match thread.state {
-                    #transition_symbols_defs
+                    #transition_symbols_defs_exec
                 }
             }
             return out;
         }
     };
+
+    return (transition_symbols_test, transition_symbols_exec);
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ThreadUpdates {
+    pub state: usize,
+    pub update_captures: Vec<(bool, bool)>,
+    pub start_only: bool,
+    pub end_only: bool,
+}
+impl ThreadUpdates {
+    /// Creates a block which takes `list: &mut [bool; STATE_NUM]` from its local context, updates it in-place using `self` (compile-time).
+    pub fn serialize_thread_update_test(&self) -> proc_macro2::TokenStream {
+        let new_state = self.state;
+        return quote! {{
+            list[#new_state] = true;
+        }};
+    }
+    /// Creates a block which takes `thread` from its local context, updates it using `self` (compile-time),
+    /// and appends it to `out` from its local context.
+    pub fn serialize_thread_update_exec(&self) -> proc_macro2::TokenStream {
+        let new_state = vmstate_label(self.state);
+        let mut capture_updates = proc_macro2::TokenStream::new();
+        for (i, (start, end)) in self.update_captures.iter().cloned().enumerate() {
+            if start {
+                capture_updates.extend(quote! {
+                    new_thread.captures[#i].0 = idx;
+                });
+            }
+            if end {
+                capture_updates.extend(quote! {
+                    new_thread.captures[#i].1 = idx;
+                });
+            }
+        }
+
+        return quote! {{
+            let mut new_thread = thread.clone();
+            new_thread.state = VMStates::#new_state;
+
+            #capture_updates
+
+            out.push(new_thread);
+        }};
+    }
+}
+
+fn calculate_epsilon_propogations(nfa: &WorkingNFA, state: usize) -> Vec<ThreadUpdates> {
+    let WorkingNFA { states } = nfa;
+    let capture_groups = nfa.num_capture_groups();
+    // reduce epsilons to occur in a single step
+    let mut new_threads = vec![ThreadUpdates {
+        state,
+        update_captures: vec![(false, false); capture_groups],
+        start_only: false,
+        end_only: false,
+    }];
+    let mut queue = VecDeque::new();
+    queue.push_back(new_threads[0].clone());
+    while let Some(thread) = queue.pop_front() {
+        // enumerate next step of new threads
+        for e in &states[thread.state].epsilons {
+            let mut new_thread = thread.clone();
+            new_thread.state = e.to;
+            match e.special {
+                EpsilonType::None => {}
+                EpsilonType::StartAnchor => new_thread.start_only = true,
+                EpsilonType::EndAnchor => new_thread.end_only = true,
+                EpsilonType::StartCapture(capture_group) => {
+                    new_thread.update_captures[capture_group].0 = true
+                }
+                EpsilonType::EndCapture(capture_group) => {
+                    new_thread.update_captures[capture_group].1 = true
+                }
+            }
+
+            if new_threads.contains(&new_thread) {
+                continue;
+            }
+            queue.push_back(new_thread.clone());
+            new_threads.push(new_thread);
+        }
+    }
+    return new_threads;
 }
 
 /// Assumes the `VMStates` enum is already created locally in the token stream
-fn serialize_pike_vm_epsilon_propogation(nfa: &WorkingNFA) -> proc_macro2::TokenStream {
+fn serialize_pike_vm_epsilon_propogation(
+    nfa: &WorkingNFA,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let WorkingNFA { states } = nfa;
     let capture_groups = nfa.num_capture_groups();
     let excluded_states = compute_excluded_states(nfa);
 
-    #[derive(Clone, PartialEq, Eq)]
-    struct ThreadUpdates {
-        pub state: usize,
-        pub update_captures: Vec<(bool, bool)>,
-        pub start_only: bool,
-        pub end_only: bool,
-    }
-
     // Generate code to propogate/split a thread according to epsilon transitions
-    let mut transition_epsilons_defs = proc_macro2::TokenStream::new();
+    let mut transition_epsilons_test = proc_macro2::TokenStream::new();
+    let mut transition_epsilons_exec = proc_macro2::TokenStream::new();
     for (i, _) in states.iter().enumerate() {
         if excluded_states[i] {
             // since we propogate, some states are now useless if they are intermediate
             // with only epsilon transitions
             continue;
         }
-        // reduce epsilons to occur in a single step
-        let mut new_threads = vec![ThreadUpdates {
-            state: i,
-            update_captures: vec![(false, false); capture_groups],
-            start_only: false,
-            end_only: false,
-        }];
-        let mut queue = VecDeque::new();
-        queue.push_back(new_threads[0].clone());
-        while let Some(thread) = queue.pop_front() {
-            // enumerate next step of new threads
-            for e in &states[thread.state].epsilons {
-                let mut new_thread = thread.clone();
-                new_thread.state = e.to;
-                match e.special {
-                    EpsilonType::None => {}
-                    EpsilonType::StartAnchor => new_thread.start_only = true,
-                    EpsilonType::EndAnchor => new_thread.end_only = true,
-                    EpsilonType::StartCapture(capture_group) => {
-                        new_thread.update_captures[capture_group].0 = true
-                    }
-                    EpsilonType::EndCapture(capture_group) => {
-                        new_thread.update_captures[capture_group].1 = true
-                    }
-                }
-
-                if new_threads.contains(&new_thread) {
-                    continue;
-                }
-                queue.push_back(new_thread.clone());
-                new_threads.push(new_thread);
-            }
-        }
-
+        let mut new_threads = calculate_epsilon_propogations(nfa, i);
         new_threads.retain(|t| !excluded_states[t.state]);
 
-        // Write epsilon-propogation of threads to the token stream
-        fn serialize_thread_update(thread: &ThreadUpdates) -> proc_macro2::TokenStream {
-            let new_state = vmstate_label(thread.state);
-            let mut capture_updates = proc_macro2::TokenStream::new();
-            for (i, (start, end)) in thread.update_captures.iter().cloned().enumerate() {
-                if start {
-                    capture_updates.extend(quote! {
-                        new_thread.captures[#i].0 = idx;
-                    });
-                }
-                if end {
-                    capture_updates.extend(quote! {
-                        new_thread.captures[#i].1 = idx;
-                    });
-                }
-            }
-
-            return quote! {{
-                let mut new_thread = thread.clone();
-                new_thread.state = VMStates::#new_state;
-
-                #capture_updates
-
-                out.push(new_thread);
-            }};
-        }
+        // Write epsilon-propogation of threads to the token stream for test
         let start_end_threads: proc_macro2::TokenStream = new_threads
             .iter()
             .filter(|t| t.start_only && t.end_only)
-            .map(serialize_thread_update)
+            .map(ThreadUpdates::serialize_thread_update_test)
             .collect();
         let start_threads: proc_macro2::TokenStream = new_threads
             .iter()
             .filter(|t| t.start_only && !t.end_only)
-            .map(serialize_thread_update)
+            .map(ThreadUpdates::serialize_thread_update_test)
             .collect();
         let end_threads: proc_macro2::TokenStream = new_threads
             .iter()
             .filter(|t| !t.start_only && t.end_only)
-            .map(serialize_thread_update)
+            .map(ThreadUpdates::serialize_thread_update_test)
             .collect();
         let normal_threads: proc_macro2::TokenStream = new_threads
             .iter()
             .filter(|t| !t.start_only && !t.end_only)
-            .map(serialize_thread_update)
+            .map(ThreadUpdates::serialize_thread_update_test)
             .collect();
 
         let label = vmstate_label(i);
-        transition_epsilons_defs.extend(quote! {
+        transition_epsilons_test.extend(quote! {
+            if list[#i] {
+                if is_start && is_end {
+                    #start_end_threads
+                }
+                if is_start {
+                    #start_threads
+                }
+                if is_end {
+                    #end_threads
+                }
+                #normal_threads
+            }
+        });
+
+        // Write epsilon-propogation of threads to the token stream for exec
+        let start_end_threads: proc_macro2::TokenStream = new_threads
+            .iter()
+            .filter(|t| t.start_only && t.end_only)
+            .map(ThreadUpdates::serialize_thread_update_exec)
+            .collect();
+        let start_threads: proc_macro2::TokenStream = new_threads
+            .iter()
+            .filter(|t| t.start_only && !t.end_only)
+            .map(ThreadUpdates::serialize_thread_update_exec)
+            .collect();
+        let end_threads: proc_macro2::TokenStream = new_threads
+            .iter()
+            .filter(|t| !t.start_only && t.end_only)
+            .map(ThreadUpdates::serialize_thread_update_exec)
+            .collect();
+        let normal_threads: proc_macro2::TokenStream = new_threads
+            .iter()
+            .filter(|t| !t.start_only && !t.end_only)
+            .map(ThreadUpdates::serialize_thread_update_exec)
+            .collect();
+
+        transition_epsilons_exec.extend(quote! {
             VMStates::#label => {
                 if is_start && is_end {
                     #start_end_threads
@@ -247,8 +349,19 @@ fn serialize_pike_vm_epsilon_propogation(nfa: &WorkingNFA) -> proc_macro2::Token
         });
     }
 
-    return quote! {
-        fn transition_epsilons(
+    let transition_epsilons_test = quote! {
+        fn transition_epsilons_test(
+            list: &mut [bool],
+            idx: usize,
+            len: usize,
+        ) {
+            let is_start = idx == 0;
+            let is_end = idx == len;
+            #transition_epsilons_test
+        }
+    };
+    let transition_epsilons_exec = quote! {
+        fn transition_epsilons_exec(
             threads: &[::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>],
             idx: usize,
             len: usize,
@@ -258,12 +371,14 @@ fn serialize_pike_vm_epsilon_propogation(nfa: &WorkingNFA) -> proc_macro2::Token
             let mut out = ::std::vec::Vec::<::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>>::new();
             for thread in threads {
                 match thread.state {
-                    #transition_epsilons_defs
+                    #transition_epsilons_exec
                 }
             }
             return out;
         }
     };
+
+    return (transition_epsilons_test, transition_epsilons_exec);
 }
 
 /// Converts a [`WorkingNFA`] into a format that, when returned by a proc macro, will
@@ -280,10 +395,13 @@ pub(crate) fn serialize_pike_vm_token_stream(nfa: &WorkingNFA) -> proc_macro2::T
             return quote! { #label, };
         })
         .collect();
+    let state_count = states.len(); // TODO: not all of these are used, so we may be able to slightly reduce usage.
     let accept_state = vmstate_label(states.len() - 1);
 
-    let transition_symbols = serialize_pike_vm_symbol_propogation(nfa);
-    let transition_epsilons = serialize_pike_vm_epsilon_propogation(nfa);
+    let (transition_symbols_test, transition_symbols_exec) =
+        serialize_pike_vm_symbol_propogation(nfa);
+    let (transition_epsilons_test, transition_epsilons_exec) =
+        serialize_pike_vm_epsilon_propogation(nfa);
 
     return quote! {{
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -291,11 +409,28 @@ pub(crate) fn serialize_pike_vm_token_stream(nfa: &WorkingNFA) -> proc_macro2::T
             #enum_states
         }
 
-        #transition_symbols
-        #transition_epsilons
+        #transition_symbols_test
+        #transition_symbols_exec
+        #transition_epsilons_test
+        #transition_epsilons_exec
 
         fn test(text: &str) -> bool {
-            todo!();
+            let mut list = [false; #state_count];
+            let mut new_list = [false; #state_count];
+            list[0] = true;
+
+            transition_epsilons_test(&mut list, 0, text.len());
+            for (i, c) in text.char_indices() {
+                transition_symbols_test(&list, &mut new_list, c);
+                if new_list.iter().all(|b| !b) {
+                    return false;
+                }
+                ::std::mem::swap(&mut list, &mut new_list);
+                transition_epsilons_test(&mut list, i + c.len_utf8(), text.len());
+                new_list.fill(false);
+            }
+
+            return list[#state_count - 1];
         }
         fn exec<'a>(text: &'a str) -> Option<[Option<&'a str>; #capture_groups]> {
             let mut threads = ::std::vec::Vec::<::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>>::new();
@@ -304,13 +439,13 @@ pub(crate) fn serialize_pike_vm_token_stream(nfa: &WorkingNFA) -> proc_macro2::T
                 captures: [(usize::MAX, usize::MAX); #capture_groups],
             });
 
-            let new_threads = transition_epsilons(&threads, 0, text.len());
+            let new_threads = transition_epsilons_exec(&threads, 0, text.len());
             threads = new_threads;
 
             for (i, c) in text.char_indices() {
-                let new_threads = transition_symbols(&threads, c);
+                let new_threads = transition_symbols_exec(&threads, c);
                 threads = new_threads;
-                let new_threads = transition_epsilons(&threads, i + c.len_utf8(), text.len());
+                let new_threads = transition_epsilons_exec(&threads, i + c.len_utf8(), text.len());
                 threads = new_threads;
                 if threads.is_empty() {
                     return None;
