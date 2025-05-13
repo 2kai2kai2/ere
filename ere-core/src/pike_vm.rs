@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use quote::quote;
 
 use crate::{
@@ -13,7 +15,7 @@ pub struct PikeVMThread<const N: usize, S: Send + Sync + Copy + Eq> {
 
 /// Not exactly the PikeVM, but close enough that I am naming it that.
 /// It works similarly, except that since we are building at compile-time, there are benefits from inlining splitting.
-/// 
+///
 /// Due to the optimizations done earlier for the [`WorkingNFA`], we also have a slightly different NFA structure.
 /// Currently we flatten all epsilon transitions for the VM so that epsilon transitions are at most a single step between symbols.
 /// I'll have to review to ensure we avoid this causing large binary size overhead,
@@ -47,13 +49,16 @@ fn vmstate_label(idx: usize) -> proc_macro2::Ident {
 /// Since we are shortcutting the epsilon transitions, we can skip printing
 /// states that have only epsilon transitions and are not the start/end states
 fn compute_excluded_states(nfa: &WorkingNFA) -> Vec<bool> {
-    let mut out = vec![true; nfa.states];
+    let mut out = vec![true; nfa.states.len()];
     out[0] = false;
-    out[nfa.states - 1] = false;
-    for t in &nfa.transitions {
-        out[t.from] = false;
-        out[t.to] = false;
+    out[nfa.states.len() - 1] = false;
+    for (from, state) in nfa.states.iter().enumerate() {
+        for t in &state.transitions {
+            out[from] = false;
+            out[t.to] = false;
+        }
     }
+
     return out;
 }
 
@@ -61,16 +66,12 @@ fn compute_excluded_states(nfa: &WorkingNFA) -> Vec<bool> {
 ///
 /// Creates the function for running symbol transitions on the pike VM
 fn serialize_pike_vm_symbol_propogation(nfa: &WorkingNFA) -> proc_macro2::TokenStream {
-    let WorkingNFA {
-        transitions,
-        states,
-        ..
-    } = nfa;
+    let WorkingNFA { states } = nfa;
     let capture_groups = nfa.num_capture_groups();
     let excluded_states = compute_excluded_states(nfa);
 
     fn make_symbol_transition(t: &WorkingTransition) -> proc_macro2::TokenStream {
-        let WorkingTransition { symbol, to, .. } = t;
+        let WorkingTransition { symbol, to } = t;
         let symbol = nfa_static::AtomStatic::serialize_as_token_stream(symbol);
         let to_label = vmstate_label(*to);
         return quote! {
@@ -88,24 +89,25 @@ fn serialize_pike_vm_symbol_propogation(nfa: &WorkingNFA) -> proc_macro2::TokenS
         };
     }
 
-    let transition_symbols_defs: proc_macro2::TokenStream =
-        std::iter::IntoIterator::into_iter(0..*states)
-            .filter(|i| !excluded_states[*i])
-            .map(|i| {
-                let label = vmstate_label(i);
-                let state_transitions: proc_macro2::TokenStream = transitions
-                    .iter()
-                    .filter(|t| t.from == i)
-                    .map(make_symbol_transition)
-                    .collect();
+    let transition_symbols_defs: proc_macro2::TokenStream = states
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !excluded_states[*i])
+        .map(|(i, state)| {
+            let label = vmstate_label(i);
+            let state_transitions: proc_macro2::TokenStream = state
+                .transitions
+                .iter()
+                .map(make_symbol_transition)
+                .collect();
 
-                return quote! {
-                    VMStates::#label => {
-                        #state_transitions
-                    }
-                };
-            })
-            .collect();
+            return quote! {
+                VMStates::#label => {
+                    #state_transitions
+                }
+            };
+        })
+        .collect();
 
     return quote! {
         fn transition_symbols(
@@ -125,9 +127,7 @@ fn serialize_pike_vm_symbol_propogation(nfa: &WorkingNFA) -> proc_macro2::TokenS
 
 /// Assumes the `VMStates` enum is already created locally in the token stream
 fn serialize_pike_vm_epsilon_propogation(nfa: &WorkingNFA) -> proc_macro2::TokenStream {
-    let WorkingNFA {
-        epsilons, states, ..
-    } = nfa;
+    let WorkingNFA { states } = nfa;
     let capture_groups = nfa.num_capture_groups();
     let excluded_states = compute_excluded_states(nfa);
 
@@ -141,7 +141,7 @@ fn serialize_pike_vm_epsilon_propogation(nfa: &WorkingNFA) -> proc_macro2::Token
 
     // Generate code to propogate/split a thread according to epsilon transitions
     let mut transition_epsilons_defs = proc_macro2::TokenStream::new();
-    for i in 0..*states {
+    for (i, _) in states.iter().enumerate() {
         if excluded_states[i] {
             // since we propogate, some states are now useless if they are intermediate
             // with only epsilon transitions
@@ -154,14 +154,11 @@ fn serialize_pike_vm_epsilon_propogation(nfa: &WorkingNFA) -> proc_macro2::Token
             start_only: false,
             end_only: false,
         }];
-        let mut stack = new_threads.clone();
-        while let Some(thread) = stack.pop() {
+        let mut queue = VecDeque::new();
+        queue.push_back(new_threads[0].clone());
+        while let Some(thread) = queue.pop_front() {
             // enumerate next step of new threads
-            for e in epsilons {
-                if e.from != thread.state {
-                    continue;
-                }
-
+            for e in &states[thread.state].epsilons {
                 let mut new_thread = thread.clone();
                 new_thread.state = e.to;
                 match e.special {
@@ -179,7 +176,7 @@ fn serialize_pike_vm_epsilon_propogation(nfa: &WorkingNFA) -> proc_macro2::Token
                 if new_threads.contains(&new_thread) {
                     continue;
                 }
-                stack.push(new_thread.clone());
+                queue.push_back(new_thread.clone());
                 new_threads.push(new_thread);
             }
         }
@@ -276,14 +273,14 @@ pub(crate) fn serialize_pike_vm_token_stream(nfa: &WorkingNFA) -> proc_macro2::T
     let capture_groups = nfa.num_capture_groups();
     let excluded_states = compute_excluded_states(nfa);
 
-    let enum_states: proc_macro2::TokenStream = std::iter::IntoIterator::into_iter(0..*states)
+    let enum_states: proc_macro2::TokenStream = std::iter::IntoIterator::into_iter(0..states.len())
         .filter(|i| !excluded_states[*i])
         .map(|i| {
             let label = vmstate_label(i);
             return quote! { #label, };
         })
         .collect();
-    let accept_state = vmstate_label(*states - 1);
+    let accept_state = vmstate_label(states.len() - 1);
 
     let transition_symbols = serialize_pike_vm_symbol_propogation(nfa);
     let transition_epsilons = serialize_pike_vm_epsilon_propogation(nfa);
