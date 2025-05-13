@@ -43,7 +43,7 @@ impl<const N: usize> std::fmt::Display for Regex<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         return match &self.0 {
             RegexEngines::NFA(nfastatic) => nfastatic.fmt(f),
-            RegexEngines::PikeVM(pike_vm) => todo!(),
+            RegexEngines::PikeVM(pike_vm) => f.write_str("<Compiled VM>"),
         };
     }
 }
