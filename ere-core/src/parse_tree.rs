@@ -426,29 +426,29 @@ impl Display for Atom {
 /// From https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap09.html#tag_09_03_05
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum BracketCharClass {
-    /// [:alnum:]
+    /// `[:alnum:]`
     Alphanumeric,
-    /// [:cntrl:]
+    /// `[:cntrl:]`
     Control,
-    /// [:lower:]
+    /// `[:lower:]`
     Lower,
-    /// [:space:]
+    /// `[:space:]`
     Space,
-    /// [:alpha:]
+    /// `[:alpha:]`
     Alphabet,
-    /// [:digit:]
+    /// `[:digit:]`
     Digit,
-    /// [:print:]
+    /// `[:print:]`
     Print,
-    /// [:upper:]
+    /// `[:upper:]`
     Upper,
-    /// [:blank:]
+    /// `[:blank:]`
     Blank,
-    /// [:graph:]
+    /// `[:graph:]`
     Graphic,
-    /// [:punct:]
+    /// `[:punct:]`
     Punctuation,
-    /// [:xdigit:]
+    /// `[:xdigit:]`
     HexDigit,
 }
 impl BracketCharClass {
@@ -616,7 +616,7 @@ const fn is_special_character(c: char) -> bool {
 
 /// The characters that can only occur if quoted
 #[inline]
-const fn is_escapable_character(c: char) -> bool {
+pub(crate) const fn is_escapable_character(c: char) -> bool {
     return is_special_character(c) || c == ']' || c == '}';
 }
 

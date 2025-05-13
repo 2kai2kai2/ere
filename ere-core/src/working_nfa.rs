@@ -39,48 +39,46 @@ impl ToTokens for EpsilonType {
 /// An epsilon transition for the [`WorkingNFA`]
 #[derive(Debug, Clone, Copy)]
 pub struct EpsilonTransition {
-    pub(crate) from: usize,
     pub(crate) to: usize,
     pub(crate) special: EpsilonType,
 }
 impl EpsilonTransition {
-    pub(crate) const fn new(from: usize, to: usize) -> EpsilonTransition {
+    pub(crate) const fn new(to: usize) -> EpsilonTransition {
         return EpsilonTransition {
-            from,
             to,
             special: EpsilonType::None,
         };
     }
     pub(crate) const fn with_offset(self, offset: usize) -> EpsilonTransition {
         return EpsilonTransition {
-            from: self.from + offset,
             to: self.to + offset,
             special: self.special,
         };
     }
+    pub(crate) fn inplace_offset(&mut self, offset: usize) {
+        self.to += offset;
+    }
     pub(crate) const fn add_offset(&self, offset: usize) -> EpsilonTransition {
         return EpsilonTransition {
-            from: self.from + offset,
             to: self.to + offset,
             special: self.special,
         };
     }
     /// Only intended for internal use by macros.
-    pub const fn __load(from: usize, to: usize, special: EpsilonType) -> EpsilonTransition {
-        return EpsilonTransition { from, to, special };
+    pub const fn __load(to: usize, special: EpsilonType) -> EpsilonTransition {
+        return EpsilonTransition { to, special };
     }
 }
 impl std::fmt::Display for EpsilonTransition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return write!(f, "{} -> {}", self.from, self.to);
+        return write!(f, "-> {}", self.to);
     }
 }
 impl ToTokens for EpsilonTransition {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let EpsilonTransition { from, to, special } = self;
+        let EpsilonTransition { to, special } = self;
         tokens.extend(quote! {
             ere_core::working_nfa::EpsilonTransition::__load(
-                #from,
                 #to,
                 #special,
             )
@@ -90,24 +88,22 @@ impl ToTokens for EpsilonTransition {
 
 #[derive(Debug, Clone)]
 pub(crate) struct WorkingTransition {
-    pub(crate) from: usize,
     pub(crate) to: usize,
     pub(crate) symbol: Atom,
 }
 impl WorkingTransition {
-    pub fn new(from: usize, to: usize, symbol: Atom) -> WorkingTransition {
-        return WorkingTransition { from, to, symbol };
+    pub fn new(to: usize, symbol: Atom) -> WorkingTransition {
+        return WorkingTransition { to, symbol };
     }
-    pub fn with_offset(self, offset: usize) -> WorkingTransition {
-        return WorkingTransition {
-            from: self.from + offset,
-            to: self.to + offset,
-            symbol: self.symbol,
-        };
+    pub fn with_offset(mut self, offset: usize) -> WorkingTransition {
+        self.inplace_offset(offset);
+        return self;
+    }
+    pub fn inplace_offset(&mut self, offset: usize) {
+        self.to += offset;
     }
     pub fn add_offset(&self, offset: usize) -> WorkingTransition {
         return WorkingTransition {
-            from: self.from + offset,
             to: self.to + offset,
             symbol: self.symbol.clone(),
         };
@@ -115,206 +111,254 @@ impl WorkingTransition {
 }
 impl std::fmt::Display for WorkingTransition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return write!(f, "{} -({})> {}", self.from, self.symbol, self.to);
+        return write!(f, "-({})> {}", self.symbol, self.to);
     }
 }
 
-/// Each NFA has one start state (`0`) and one accept state (`states - 1`)
 #[derive(Debug, Clone)]
-pub struct WorkingNFA {
+pub struct WorkingState {
     pub(crate) transitions: Vec<WorkingTransition>,
     pub(crate) epsilons: Vec<EpsilonTransition>,
-    pub(crate) states: usize,
 }
-impl WorkingNFA {
-    const fn build_empty() -> WorkingNFA {
-        return WorkingNFA {
+impl WorkingState {
+    pub const fn new() -> WorkingState {
+        return WorkingState {
             transitions: Vec::new(),
             epsilons: Vec::new(),
-            states: 1,
         };
     }
-    fn build_symbol(c: &Atom) -> WorkingNFA {
-        return WorkingNFA {
-            transitions: vec![WorkingTransition::new(0, 1, c.clone())],
-            epsilons: Vec::new(),
-            states: 2,
+    pub fn with_transition(mut self, to: usize, symbol: Atom) -> WorkingState {
+        self.transitions.push(WorkingTransition::new(to, symbol));
+        return self;
+    }
+    pub fn with_epsilon(mut self, to: usize) -> WorkingState {
+        self.epsilons.push(EpsilonTransition::new(to));
+        return self;
+    }
+    pub fn with_epsilon_special(mut self, to: usize, special: EpsilonType) -> WorkingState {
+        self.epsilons.push(EpsilonTransition { to, special });
+        return self;
+    }
+    pub fn with_offset(mut self, offset: usize) -> WorkingState {
+        self.inplace_offset(offset);
+        return self;
+    }
+    pub fn inplace_offset(&mut self, offset: usize) {
+        for t in &mut self.transitions {
+            t.inplace_offset(offset);
+        }
+        for e in &mut self.epsilons {
+            e.inplace_offset(offset);
+        }
+    }
+    pub fn add_offset(&self, offset: usize) -> WorkingState {
+        return WorkingState {
+            transitions: self
+                .transitions
+                .iter()
+                .map(|t| t.add_offset(offset))
+                .collect(),
+            epsilons: self.epsilons.iter().map(|e| e.add_offset(offset)).collect(),
         };
+    }
+}
+impl std::fmt::Display for WorkingState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for t in &self.transitions {
+            writeln!(f, "  {t}")?;
+        }
+        for e in &self.epsilons {
+            writeln!(f, "  {e}")?;
+        }
+        return Ok(());
+    }
+}
+
+/// Each NFA has one start state (`0`) and one accept state (`states.len() - 1`)
+#[derive(Debug, Clone)]
+pub struct WorkingNFA {
+    pub(crate) states: Vec<WorkingState>,
+}
+impl WorkingNFA {
+    fn build_empty() -> WorkingNFA {
+        let states = vec![WorkingState::new()];
+        return WorkingNFA { states };
+    }
+    fn build_symbol(c: &Atom) -> WorkingNFA {
+        let states = vec![
+            WorkingState::new().with_transition(1, c.clone()),
+            WorkingState::new(),
+        ];
+        return WorkingNFA { states };
+    }
+    fn nfa_union(nodes: &[WorkingNFA]) -> WorkingNFA {
+        let states_count = 2 + nodes.iter().map(|n| n.states.len()).sum::<usize>();
+        let mut states = vec![WorkingState::new()];
+        for nfa in nodes {
+            let sub_nfa_start = states.len();
+            states[0]
+                .epsilons
+                .push(EpsilonTransition::new(sub_nfa_start));
+            states.extend(
+                nfa.states
+                    .iter()
+                    .map(|state| state.add_offset(sub_nfa_start)),
+            );
+            states
+                .last_mut()
+                .unwrap()
+                .epsilons
+                .push(EpsilonTransition::new(states_count - 1));
+        }
+        states.push(WorkingState::new());
+        assert_eq!(states_count, states.len());
+
+        return WorkingNFA { states };
     }
     fn build_union(nodes: &[SimplifiedTreeNode]) -> WorkingNFA {
         let sub_nfas: Vec<WorkingNFA> = nodes.iter().map(WorkingNFA::build).collect();
-        let states = 2 + sub_nfas.iter().map(|n| n.states).sum::<usize>();
-        let mut transitions = Vec::new();
-        let mut epsilons = Vec::new();
-        let mut used_states = 1usize;
-        for nfa in sub_nfas {
-            // Epsilon transition in
-            epsilons.push(EpsilonTransition::new(0, used_states));
-            // Copy internal transitions
-            transitions.extend(
-                nfa.transitions
-                    .into_iter()
-                    .map(|t| t.with_offset(used_states)),
-            );
-            epsilons.extend(nfa.epsilons.into_iter().map(|t| t.with_offset(used_states)));
-            // Epsilon transition out
-            epsilons.push(EpsilonTransition::new(
-                used_states + nfa.states - 1,
-                states - 1,
-            ));
-            used_states += nfa.states;
-        }
-        assert_eq!(used_states + 1, states);
+        return WorkingNFA::nfa_union(&sub_nfas);
+    }
+    fn nfa_capture(nfa: &WorkingNFA, group_num: usize) -> WorkingNFA {
+        let states_count = 2 + nfa.states.len();
+        let mut states: Vec<WorkingState> = std::iter::once(
+            WorkingState::new().with_epsilon_special(1, EpsilonType::StartCapture(group_num)),
+        )
+        .chain(nfa.states.iter().map(|state| state.add_offset(1)))
+        .chain(std::iter::once(WorkingState::new()))
+        .collect();
+        assert_eq!(states_count, states.len());
+        states[states_count - 2].epsilons.push(EpsilonTransition {
+            to: states_count - 1,
+            special: EpsilonType::EndCapture(group_num),
+        });
 
-        return WorkingNFA {
-            transitions,
-            epsilons,
-            states,
-        };
+        return WorkingNFA { states };
     }
     fn build_capture(tree: &SimplifiedTreeNode, group_num: usize) -> WorkingNFA {
         let nfa = WorkingNFA::build(tree);
-        let states = nfa.states + 2;
-        let mut epsilons: Vec<_> = nfa.epsilons.into_iter().map(|t| t.with_offset(1)).collect();
-        let transitions: Vec<_> = nfa
-            .transitions
-            .into_iter()
-            .map(|t| t.with_offset(1))
-            .collect();
-        epsilons.push(EpsilonTransition {
-            from: 0,
-            to: 1,
-            special: EpsilonType::StartCapture(group_num),
-        });
-        epsilons.push(EpsilonTransition {
-            from: states - 2,
-            to: states - 1,
-            special: EpsilonType::EndCapture(group_num),
-        });
-        return WorkingNFA {
-            transitions,
-            epsilons,
-            states,
-        };
+        return WorkingNFA::nfa_capture(&nfa, group_num);
     }
-    fn build_concat(nodes: &[SimplifiedTreeNode]) -> WorkingNFA {
-        if nodes.is_empty() {
-            return WorkingNFA {
-                transitions: Vec::new(),
-                epsilons: Vec::new(),
-                states: 1,
-            };
+    fn nfa_concat<T: IntoIterator<Item = WorkingNFA>>(nodes: T) -> WorkingNFA {
+        let mut states = vec![WorkingState::new().with_epsilon(1)];
+
+        for nfa in nodes {
+            let states_count = states.len();
+            states.extend(
+                nfa.states
+                    .into_iter()
+                    .map(|state| state.with_offset(states_count)),
+            );
+            let states_count = states.len();
+            states
+                .last_mut()
+                .unwrap()
+                .epsilons
+                .push(EpsilonTransition::new(states_count));
         }
 
-        let mut states = 1usize;
-        let mut epsilons = vec![EpsilonTransition::new(0, 1)];
-        let mut transitions = vec![];
-
-        for sub in nodes {
-            let nfa = WorkingNFA::build(sub);
-            transitions.extend(nfa.transitions.into_iter().map(|t| t.with_offset(states)));
-            epsilons.extend(nfa.epsilons.into_iter().map(|t| t.with_offset(states)));
-            states += nfa.states;
-            epsilons.push(EpsilonTransition::new(states - 1, states));
-        }
-
-        return WorkingNFA {
-            transitions,
-            epsilons,
-            states: states + 1,
-        };
+        states.push(WorkingState::new());
+        return WorkingNFA { states };
+    }
+    fn build_concat<'a, T: IntoIterator<Item = &'a SimplifiedTreeNode>>(nodes: T) -> WorkingNFA {
+        return WorkingNFA::nfa_concat(nodes.into_iter().map(WorkingNFA::build));
+    }
+    fn nfa_repeat(nfa: &WorkingNFA, times: usize) -> WorkingNFA {
+        return WorkingNFA::nfa_concat(std::iter::repeat(nfa).cloned().take(times));
     }
     fn build_repeat(tree: &SimplifiedTreeNode, times: usize) -> WorkingNFA {
-        let mut states = 1usize;
-        let mut epsilons = vec![EpsilonTransition::new(0, 1)];
-        let mut transitions = vec![];
         let nfa = WorkingNFA::build(tree);
-
-        for _ in 0..times {
-            transitions.extend(nfa.transitions.iter().map(|t| t.add_offset(states)));
-            epsilons.extend(nfa.epsilons.iter().map(|t| t.add_offset(states)));
-            states += nfa.states;
-            epsilons.push(EpsilonTransition::new(states - 1, states));
-        }
-
-        return WorkingNFA {
-            transitions,
-            epsilons,
-            states: states + 1,
-        };
+        return WorkingNFA::nfa_repeat(&nfa, times);
     }
-    fn build_upto(tree: &SimplifiedTreeNode, times: usize) -> WorkingNFA {
-        let nfa = WorkingNFA::build(tree);
-        let states = 2 + nfa.states * times;
-        let mut used_states = 1usize;
-        let mut transitions = Vec::new();
-        let mut epsilons = vec![
-            EpsilonTransition::new(0, 1),
-            EpsilonTransition::new(0, states - 1),
-        ];
+    fn nfa_upto(nfa: &WorkingNFA, times: usize, longest: bool) -> WorkingNFA {
+        let end_state_idx = 1 + (nfa.states.len() + 1) * times;
 
-        for _ in 0..times {
-            transitions.extend(nfa.transitions.iter().map(|t| t.add_offset(states)));
-            epsilons.extend(nfa.epsilons.iter().map(|t| t.add_offset(states)));
-            used_states += nfa.states;
-            epsilons.push(EpsilonTransition::new(used_states - 1, used_states));
-            if used_states != states - 1 {
-                epsilons.push(EpsilonTransition::new(used_states - 1, states - 1));
+        let mut states = vec![WorkingState::new()
+            .with_epsilon(1)
+            .with_epsilon(end_state_idx - 1)];
+        for i in 0..times {
+            let states_count = states.len();
+            states.extend(
+                nfa.states
+                    .iter()
+                    .map(|state| state.add_offset(states_count)),
+            );
+            let transition_state_idx = states.len();
+            states
+                .last_mut()
+                .unwrap()
+                .epsilons
+                .push(EpsilonTransition::new(transition_state_idx));
+            let mut transition_state = WorkingState::new();
+            if i + 1 != times {
+                if longest {
+                    transition_state
+                        .epsilons
+                        .push(EpsilonTransition::new(states.len() + 1));
+                }
+
+                transition_state
+                    .epsilons
+                    .push(EpsilonTransition::new(end_state_idx - 1));
+                if !longest {
+                    transition_state
+                        .epsilons
+                        .push(EpsilonTransition::new(states.len() + 1));
+                }
             }
+            states.push(transition_state);
         }
 
-        return WorkingNFA {
-            transitions,
-            epsilons,
-            states,
-        };
+        return WorkingNFA { states };
     }
-    fn build_star(tree: &SimplifiedTreeNode) -> WorkingNFA {
+    fn build_upto(tree: &SimplifiedTreeNode, times: usize, longest: bool) -> WorkingNFA {
         let nfa = WorkingNFA::build(tree);
-        let states = 2 + nfa.states;
-        let transitions: Vec<_> = nfa
-            .transitions
-            .into_iter()
-            .map(|t| t.with_offset(1))
+        return WorkingNFA::nfa_upto(&nfa, times, longest);
+    }
+    fn nfa_star(nfa: WorkingNFA, longest: bool) -> WorkingNFA {
+        let end_state_idx = 1 + nfa.states.len();
+        let mut start_state = WorkingState::new();
+        if !longest {
+            start_state
+                .epsilons
+                .push(EpsilonTransition::new(end_state_idx));
+        }
+        start_state.epsilons.push(EpsilonTransition::new(1));
+        if longest {
+            start_state
+                .epsilons
+                .push(EpsilonTransition::new(end_state_idx));
+        }
+        let mut states: Vec<WorkingState> = std::iter::once(start_state)
+            .chain(nfa.states.into_iter().map(|state| state.with_offset(1)))
+            .chain(std::iter::once(WorkingState::new()))
             .collect();
-        let mut epsilons: Vec<_> = nfa.epsilons.into_iter().map(|t| t.with_offset(1)).collect();
-        epsilons.push(EpsilonTransition::new(0, 1));
-        epsilons.push(EpsilonTransition::new(states - 2, 0));
-        epsilons.push(EpsilonTransition::new(0, states - 1));
-        return WorkingNFA {
-            transitions,
-            epsilons,
-            states,
-        };
+        states[end_state_idx - 1]
+            .epsilons
+            .push(EpsilonTransition::new(0));
+        return WorkingNFA { states };
+    }
+    fn build_star(tree: &SimplifiedTreeNode, longest: bool) -> WorkingNFA {
+        let nfa = WorkingNFA::build(tree);
+        return WorkingNFA::nfa_star(nfa, longest);
     }
     fn build_start() -> WorkingNFA {
-        return WorkingNFA {
-            transitions: Vec::new(),
-            epsilons: vec![EpsilonTransition {
-                from: 0,
-                to: 1,
-                special: EpsilonType::StartAnchor,
-            }],
-            states: 2,
-        };
+        let states = vec![
+            WorkingState::new().with_epsilon_special(1, EpsilonType::StartAnchor),
+            WorkingState::new(),
+        ];
+        return WorkingNFA { states };
     }
     fn build_end() -> WorkingNFA {
-        return WorkingNFA {
-            transitions: Vec::new(),
-            epsilons: vec![EpsilonTransition {
-                from: 0,
-                to: 1,
-                special: EpsilonType::EndAnchor,
-            }],
-            states: 2,
-        };
+        let states = vec![
+            WorkingState::new().with_epsilon_special(1, EpsilonType::EndAnchor),
+            WorkingState::new(),
+        ];
+        return WorkingNFA { states };
     }
-    const fn build_never() -> WorkingNFA {
-        return WorkingNFA {
-            transitions: Vec::new(),
-            epsilons: Vec::new(),
-            states: 2,
-        };
+    fn build_never() -> WorkingNFA {
+        let states = vec![WorkingState::new(), WorkingState::new()];
+        return WorkingNFA { states };
     }
     /// Recursively builds an inefficient but valid NFA based loosely on Thompson's Algorithm.
     ///
@@ -329,8 +373,10 @@ impl WorkingNFA {
             }
             SimplifiedTreeNode::Concat(nodes) => WorkingNFA::build_concat(nodes),
             SimplifiedTreeNode::Repeat(tree, times) => WorkingNFA::build_repeat(tree, *times),
-            SimplifiedTreeNode::UpTo(tree, times, _) => WorkingNFA::build_upto(tree, *times),
-            SimplifiedTreeNode::Star(tree, _) => WorkingNFA::build_star(tree),
+            SimplifiedTreeNode::UpTo(tree, times, longest) => {
+                WorkingNFA::build_upto(tree, *times, *longest)
+            }
+            SimplifiedTreeNode::Star(tree, longest) => WorkingNFA::build_star(tree, *longest),
             SimplifiedTreeNode::Start => WorkingNFA::build_start(),
             SimplifiedTreeNode::End => WorkingNFA::build_end(),
             SimplifiedTreeNode::Never => WorkingNFA::build_never(),
@@ -343,22 +389,17 @@ impl WorkingNFA {
         nfa.clean_end_anchors();
 
         // add loops at start and end in case we lack anchors
-        nfa.transitions = nfa.transitions.iter().map(|t| t.add_offset(1)).collect();
-        nfa.epsilons = nfa.epsilons.iter().map(|e| e.add_offset(1)).collect();
-        nfa.states += 2;
-        nfa.epsilons.push(EpsilonTransition::new(0, 1));
-        nfa.transitions.push(WorkingTransition::new(
-            0,
-            0,
-            Atom::NonmatchingList(Vec::new()),
-        ));
-        nfa.epsilons
-            .push(EpsilonTransition::new(nfa.states - 2, nfa.states - 1));
-        nfa.transitions.push(WorkingTransition::new(
-            nfa.states - 1,
-            nfa.states - 1,
-            Atom::NonmatchingList(Vec::new()),
-        ));
+        nfa = WorkingNFA::nfa_concat([
+            WorkingNFA::nfa_star(
+                WorkingNFA::build_symbol(&Atom::NonmatchingList(Vec::new())),
+                false,
+            ),
+            nfa,
+            WorkingNFA::nfa_star(
+                WorkingNFA::build_symbol(&Atom::NonmatchingList(Vec::new())),
+                false,
+            ),
+        ]);
 
         // Then remove redundant transitions from nodes before/after anchors
         // May include the loops we just added
@@ -366,7 +407,11 @@ impl WorkingNFA {
             std::iter::zip(nfa.nodes_after_end(), nfa.nodes_before_start())
                 .map(|(a, b)| a || b)
                 .collect();
-        nfa.transitions.retain(|t| !zero_symbol_states[t.from]);
+        for (from, state) in nfa.states.iter_mut().enumerate() {
+            if zero_symbol_states[from] {
+                state.transitions = Vec::new();
+            }
+        }
 
         // Finally, do normal optimization passes
         while nfa.optimize_pass() {}
@@ -377,178 +422,207 @@ impl WorkingNFA {
     /// Removes start anchors that will never be satisfied
     /// (basically turning them into a `Never` to allow further optimization)
     fn clean_start_anchors(&mut self) {
-        let mut zero_len_reachable = vec![false; self.states];
+        let mut zero_len_reachable = vec![false; self.states.len()];
         zero_len_reachable[0] = true;
-        let mut changed = false;
-        loop {
-            for e in self.epsilons.iter() {
-                if zero_len_reachable[e.from] && !zero_len_reachable[e.to] {
-                    zero_len_reachable[e.to] = true;
-                    changed = true;
+        let mut stack = vec![0];
+        while let Some(state) = stack.pop() {
+            for e in &self.states[state].epsilons {
+                if !zero_len_reachable[e.to] {
+                    stack.push(e.to);
                 }
+                zero_len_reachable[e.to] = true;
             }
-            if !changed {
-                break;
-            }
-            changed = false;
         }
-        self.epsilons = self
-            .epsilons
-            .iter()
-            .filter(|t| t.special != EpsilonType::StartAnchor || zero_len_reachable[t.from])
-            .cloned()
-            .collect();
+
+        for (i, state) in self.states.iter_mut().enumerate() {
+            state
+                .epsilons
+                .retain(|e| e.special != EpsilonType::StartAnchor || zero_len_reachable[i]);
+        }
     }
 
     /// Removes end anchors that will never be satisfied
     /// (basically turning them into a `Never` to allow further optimization)    
     fn clean_end_anchors(&mut self) {
-        let mut zero_len_reachable = vec![false; self.states];
-        zero_len_reachable[self.states - 1] = true;
-        let mut changed = false;
-        loop {
-            for e in self.epsilons.iter() {
-                if !zero_len_reachable[e.from] && zero_len_reachable[e.to] {
-                    zero_len_reachable[e.from] = true;
-                    changed = true;
-                }
+        let mut zero_len_reachable = vec![false; self.states.len()];
+        zero_len_reachable[self.states.len() - 1] = true;
+
+        let mut reverse_epsilons = vec![Vec::new(); self.states.len()];
+        for (i, state) in self.states.iter().enumerate() {
+            for e in &state.epsilons {
+                reverse_epsilons[e.to].push(i);
             }
-            if !changed {
-                break;
-            }
-            changed = false;
         }
-        self.epsilons = self
-            .epsilons
-            .iter()
-            .filter(|t| t.special != EpsilonType::EndAnchor || zero_len_reachable[t.to])
-            .cloned()
-            .collect();
+
+        let mut stack = vec![self.states.len() - 1];
+        while let Some(state) = stack.pop() {
+            for src in &reverse_epsilons[state] {
+                if !zero_len_reachable[*src] {
+                    stack.push(*src);
+                }
+                zero_len_reachable[*src] = true;
+            }
+        }
+
+        for state in self.states.iter_mut() {
+            state
+                .epsilons
+                .retain(|e| e.special != EpsilonType::EndAnchor || zero_len_reachable[e.to]);
+        }
     }
     /// Finds all nodes that are only ever visited after a `$`.
     fn nodes_after_end(&self) -> Vec<bool> {
-        let mut nodes = vec![true; self.states];
+        let mut nodes = vec![true; self.states.len()];
         nodes[0] = false;
-        let mut changed = false;
-        loop {
-            for e in self.epsilons.iter() {
-                if !nodes[e.from] && nodes[e.to] && e.special != EpsilonType::EndAnchor {
+
+        let mut stack = vec![0];
+        while let Some(from) = stack.pop() {
+            for e in self.states[from].epsilons.iter() {
+                if nodes[e.to] && e.special != EpsilonType::EndAnchor {
                     nodes[e.to] = false;
-                    changed = true;
+                    stack.push(e.to);
                 }
             }
-            for t in self.transitions.iter() {
-                if !nodes[t.from] && nodes[t.to] {
+            for t in self.states[from].transitions.iter() {
+                if nodes[t.to] {
                     nodes[t.to] = false;
-                    changed = true;
+                    stack.push(t.to);
                 }
             }
-            if !changed {
-                break;
-            }
-            changed = false;
         }
         return nodes;
     }
     /// Finds all nodes that are only ever visited before a `^`.
     fn nodes_before_start(&self) -> Vec<bool> {
-        let mut nodes = vec![true; self.states];
-        nodes[self.states - 1] = false;
-        let mut changed = false;
-        loop {
-            for e in self.epsilons.iter() {
-                if nodes[e.from] && !nodes[e.to] && e.special != EpsilonType::StartAnchor {
-                    nodes[e.from] = false;
-                    changed = true;
+        let mut reverse = vec![Vec::new(); self.states.len()];
+        for (i, state) in self.states.iter().enumerate() {
+            for e in &state.epsilons {
+                if e.special != EpsilonType::StartAnchor {
+                    reverse[e.to].push(i);
                 }
             }
-            for t in self.transitions.iter() {
-                if nodes[t.from] && !nodes[t.to] {
-                    nodes[t.from] = false;
-                    changed = true;
+            for t in &state.transitions {
+                reverse[t.to].push(i);
+            }
+        }
+
+        let mut nodes = vec![true; self.states.len()];
+        nodes[self.states.len() - 1] = false;
+
+        let mut stack = vec![self.states.len() - 1];
+        while let Some(to) = stack.pop() {
+            for from in &reverse[to] {
+                if nodes[*from] {
+                    nodes[*from] = false;
+                    stack.push(*from);
                 }
             }
-            if !changed {
-                break;
-            }
-            changed = false;
         }
         return nodes;
     }
 
-    /// Optimizes the NFA graph
+    /// Helper function for removing a set of states.
+    ///
+    /// These states should have no incoming transitions.
+    fn remove_dead_states<T: IntoIterator<Item = bool>>(&mut self, dead_states: T) {
+        let state_map: Vec<usize> = dead_states
+            .into_iter()
+            .scan(0, |s, dead| {
+                if dead {
+                    return Some(usize::MAX);
+                } else {
+                    let out = *s;
+                    *s += 1;
+                    return Some(out);
+                }
+            })
+            .collect();
+        self.states = self
+            .states
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| state_map[*i] != usize::MAX)
+            .map(|(_, state)| state)
+            .cloned()
+            .collect();
+
+        for state in &mut self.states {
+            for t in &mut state.transitions {
+                t.to = state_map[t.to];
+            }
+            for t in &mut state.epsilons {
+                t.to = state_map[t.to];
+            }
+        }
+    }
+
+    /// Optimizes the NFA graph.
     ///
     /// Returns `true` if changes were made (meaning another pass should be tried).
     fn optimize_pass(&mut self) -> bool {
         let mut changed = false;
+        let state_count = self.states.len();
 
-        let mut dead_states = vec![false; self.states];
+        let mut dead_states = vec![false; self.states.len()];
 
         // Skip redundant states
         // Special transitions (anchors + capture groups) are treated similar to non-epsilon transitions
-        for state in 1..self.states - 1 {
-            let incoming: Vec<usize> = self
-                .transitions
+        for state_idx in 1..state_count - 1 {
+            let incoming: Vec<(usize, usize)> = self
+                .states
                 .iter()
                 .enumerate()
-                .filter(|(_, t)| t.to == state)
-                .map(|(i, _)| i)
+                .flat_map(|(s_i, s)| s.transitions.iter().enumerate().map(move |(t, _)| (s_i, t)))
+                .filter(|(s, t)| self.states[*s].transitions[*t].to == state_idx)
                 .collect();
-            let outgoing: Vec<usize> = self
-                .transitions
+            let incoming_eps: Vec<(usize, usize)> = self
+                .states
                 .iter()
                 .enumerate()
-                .filter(|(_, t)| t.from == state)
-                .map(|(i, _)| i)
-                .collect();
-            let incoming_eps: Vec<usize> = self
-                .epsilons
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| t.to == state)
-                .map(|(i, _)| i)
-                .collect();
-            let outgoing_eps: Vec<usize> = self
-                .epsilons
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| t.from == state)
-                .map(|(i, _)| i)
+                .flat_map(|(s_i, s)| s.epsilons.iter().enumerate().map(move |(e, _)| (s_i, e)))
+                .filter(|(s, e)| self.states[*s].epsilons[*e].to == state_idx)
                 .collect();
 
             match (
                 incoming.as_slice(),
                 incoming_eps.as_slice(),
-                outgoing.as_slice(),
-                outgoing_eps.as_slice(),
+                self.states[state_idx].transitions.len(),
+                self.states[state_idx].epsilons.len(),
             ) {
                 // `as -xes> b -e> c` can become `as -xes> c` (assuming no other transitions)
-                (incoming, incoming_eps, &[], &[outgoing_eps])
-                    if self.epsilons[outgoing_eps].special == EpsilonType::None =>
+                (incoming, incoming_eps, 0, 1)
+                    if self.states[state_idx].epsilons[0].special == EpsilonType::None =>
                 {
-                    for idx in incoming {
-                        self.transitions[*idx].to = self.epsilons[outgoing_eps].to;
+                    let to = self.states[state_idx].epsilons[0].to;
+                    for (s, t) in incoming {
+                        self.states[*s].transitions[*t].to = to;
                     }
-                    for idx in incoming_eps {
-                        self.epsilons[*idx].to = self.epsilons[outgoing_eps].to;
+                    for (s, e) in incoming_eps {
+                        self.states[*s].epsilons[*e].to = to;
                     }
-                    dead_states[state] = true;
-                    self.epsilons.swap_remove(outgoing_eps);
+                    dead_states[state_idx] = true;
+                    self.states[state_idx].epsilons = Vec::new();
                     changed = true;
                     continue;
                 }
-                // `a -e> b -xes> cs` can become `a -xes> cs` (assuming no other transitions)
-                (&[], &[incoming_eps], outgoing, outgoing_eps)
-                    if self.epsilons[incoming_eps].special == EpsilonType::None =>
+                // `a -e> b -es> cs` can become `a -es> cs` (assuming no other transitions)
+                (&[], &[(incoming_state, incoming_eps)], 0, _)
+                    if self.states[incoming_state].epsilons[incoming_eps].special
+                        == EpsilonType::None =>
                 {
-                    for idx in outgoing {
-                        self.transitions[*idx].from = self.epsilons[incoming_eps].from;
-                    }
-                    for idx in outgoing_eps {
-                        self.epsilons[*idx].from = self.epsilons[incoming_eps].from;
-                    }
-                    dead_states[state] = true;
-                    self.epsilons.swap_remove(incoming_eps);
+                    let outgoing_eps = std::mem::take(&mut self.states[state_idx].epsilons);
+                    let after = self.states[incoming_state]
+                        .epsilons
+                        .split_off(incoming_eps + 1);
+                    self.states[incoming_state].epsilons.pop();
+                    self.states[incoming_state]
+                        .epsilons
+                        .extend_from_slice(&outgoing_eps);
+                    self.states[incoming_state]
+                        .epsilons
+                        .extend_from_slice(&after);
+
+                    dead_states[state_idx] = true;
                     changed = true;
                     continue;
                 }
@@ -556,6 +630,7 @@ impl WorkingNFA {
             }
 
             // TODO:
+            // `a -e> b -xes> cs` can become `a -xes> cs` (assuming no other transitions)
             // `a -e> b -e> a` can combine `a` and `b` (including other transitions)
             // TODO: might cause additional overhead in some cases, should we do
             // ??? `a -x> b -es> cs` can become `a -xs> cs`
@@ -565,117 +640,91 @@ impl WorkingNFA {
             return changed;
         }
 
-        let mut new_states = 0;
-        let state_map: Vec<usize> = dead_states
-            .into_iter()
-            .scan(0, |s, dead| {
-                if dead {
-                    return Some(usize::MAX);
-                } else {
-                    let out = *s;
-                    *s += 1;
-                    new_states = *s;
-                    return Some(out);
-                }
-            })
-            .collect();
-        self.states = new_states;
-
-        for t in &mut self.transitions {
-            t.from = state_map[t.from];
-            t.to = state_map[t.to];
-        }
-        for t in &mut self.epsilons {
-            t.from = state_map[t.from];
-            t.to = state_map[t.to];
-        }
+        self.remove_dead_states(dead_states);
 
         return changed;
+    }
+
+    /// Finds the states that can be reached from the start via any path
+    fn states_reachable_start(&self) -> Vec<bool> {
+        let mut reachable = vec![false; self.states.len()];
+        reachable[0] = true;
+        let mut stack = vec![0];
+
+        while let Some(state) = stack.pop() {
+            for src in &self.states[state].epsilons {
+                if !reachable[src.to] {
+                    stack.push(src.to);
+                }
+                reachable[src.to] = true;
+            }
+            for src in &self.states[state].transitions {
+                if !reachable[src.to] {
+                    stack.push(src.to);
+                }
+                reachable[src.to] = true;
+            }
+        }
+
+        return reachable;
+    }
+    /// Finds the states that can reach the end via any path
+    fn states_reachable_end(&self) -> Vec<bool> {
+        let mut reverse = vec![Vec::new(); self.states.len()];
+        for (i, state) in self.states.iter().enumerate() {
+            for e in &state.epsilons {
+                reverse[e.to].push(i);
+            }
+            for t in &state.transitions {
+                reverse[t.to].push(i);
+            }
+        }
+
+        let mut reachable = vec![false; self.states.len()];
+        reachable[self.states.len() - 1] = true;
+        let mut stack = vec![self.states.len() - 1];
+
+        while let Some(state) = stack.pop() {
+            for src in &reverse[state] {
+                if !reachable[*src] {
+                    stack.push(*src);
+                }
+                reachable[*src] = true;
+            }
+        }
+
+        return reachable;
     }
 
     /// Removes all nodes that cannot be reached or cannot reach the end.
     ///
     /// Ignores special epsilon types (so should be called after they have been resolved)
     fn remove_unreachable(&mut self) {
-        let mut reach_start = vec![false; self.states];
-        reach_start[0] = true;
-        let mut reach_end = vec![false; self.states];
-        reach_end[self.states - 1] = true;
-
-        let mut changed = false;
-        loop {
-            for e in self.epsilons.iter() {
-                if reach_start[e.from] && !reach_start[e.to] {
-                    reach_start[e.to] = true;
-                    changed = true;
-                }
-                if !reach_end[e.from] && reach_end[e.to] {
-                    reach_end[e.from] = true;
-                    changed = true;
-                }
-            }
-            for t in self.transitions.iter() {
-                if reach_start[t.from] && !reach_start[t.to] {
-                    reach_start[t.to] = true;
-                    changed = true;
-                }
-                if !reach_end[t.from] && reach_end[t.to] {
-                    reach_end[t.from] = true;
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-            changed = false;
-        }
+        let reach_start = self.states_reachable_start();
+        let reach_end = self.states_reachable_end();
 
         // Remove transitions that involve redundant states
-        self.transitions = self
-            .transitions
-            .iter()
-            .filter(|t| reach_start[t.from] && reach_end[t.to])
-            .cloned()
-            .collect();
-        self.epsilons = self
-            .epsilons
-            .iter()
-            .filter(|e| reach_start[e.from] && reach_end[e.to])
-            .cloned()
-            .collect();
+        for state in &mut self.states {
+            state
+                .epsilons
+                .retain(|e| reach_start[e.to] && reach_end[e.to]);
+            state
+                .transitions
+                .retain(|t| reach_start[t.to] && reach_end[t.to]);
+        }
 
         // Then remove the states
-        let mut new_states = 0;
-        let state_map: Vec<usize> = std::iter::zip(reach_start.into_iter(), reach_end.into_iter())
-            .map(|(a, b)| !a || !b)
-            .scan(0, |s, dead| {
-                if dead {
-                    return Some(usize::MAX);
-                } else {
-                    let out = *s;
-                    *s += 1;
-                    new_states = *s;
-                    return Some(out);
-                }
-            })
-            .collect();
-        self.states = new_states;
-
-        for t in &mut self.transitions {
-            t.from = state_map[t.from];
-            t.to = state_map[t.to];
-        }
-        for t in &mut self.epsilons {
-            t.from = state_map[t.from];
-            t.to = state_map[t.to];
-        }
+        self.remove_dead_states(
+            std::iter::zip(reach_start.into_iter(), reach_end.into_iter()).map(|(a, b)| !a || !b),
+        );
     }
 
     /// Finds the number of capture groups in this NFA
     pub fn num_capture_groups(&self) -> usize {
         return self
-            .epsilons
+            .states
             .iter()
+            .flat_map(|state| &state.epsilons)
             .map(|eps| match eps.special {
                 EpsilonType::StartCapture(n) => n,
                 _ => 0,
@@ -719,50 +768,53 @@ impl WorkingNFA {
         }
         text_parts.push("\\begin{tikzpicture}[node distance=2cm, auto]\n".into());
 
-        text_parts.push("\\node[state, initial](q0){$q_0$};\n".into());
-        for i in 1..self.states - 1 {
-            text_parts.push(format!(
-                "\\node[state, right of=q{}](q{}){{$q_{{{}}}$}};\n",
-                i - 1,
-                i,
-                i,
-            ));
-        }
-        text_parts.push(format!(
-            "\\node[state, accepting, right of=q{}](q{}){{$q_{{{}}}$}};\n",
-            self.states - 2,
-            self.states - 1,
-            self.states - 1,
-        ));
+        let mut transition_parts = Vec::new();
 
-        for WorkingTransition { from, to, symbol } in &self.transitions {
-            let bend = match to.cmp(from) {
-                std::cmp::Ordering::Less => "[bend left] ",
-                std::cmp::Ordering::Equal => "[loop below]",
-                std::cmp::Ordering::Greater => "[bend left] ",
-            };
-            text_parts.push(format!(
-                "\\path[->] (q{from}) edge {bend} node {{{}}} (q{to});\n",
-                escape_latex(symbol.to_string()),
-            ));
+        for (i, state) in self.states.iter().enumerate() {
+            if i == 0 {
+                text_parts.push("\\node[state, initial](q0){$q_0$};\n".into());
+            } else if i + 1 == self.states.len() {
+                text_parts.push(format!(
+                    "\\node[state, accepting, right of=q{}](q{i}){{$q_{{{i}}}$}};\n",
+                    i - 1,
+                ));
+            } else {
+                text_parts.push(format!(
+                    "\\node[state, right of=q{}](q{i}){{$q_{{{i}}}$}};\n",
+                    i - 1,
+                ));
+            }
+
+            for WorkingTransition { to, symbol } in &state.transitions {
+                let bend = match to.cmp(&i) {
+                    std::cmp::Ordering::Less => "[bend left] ",
+                    std::cmp::Ordering::Equal => "[loop below]",
+                    std::cmp::Ordering::Greater => "[bend left] ",
+                };
+                transition_parts.push(format!(
+                    "\\path[->] (q{i}) edge {bend} node {{{}}} (q{to});\n",
+                    escape_latex(symbol.to_string()),
+                ));
+            }
+            for EpsilonTransition { to, special } in &state.epsilons {
+                let bend = match to.cmp(&i) {
+                    std::cmp::Ordering::Less => "[bend left] ",
+                    std::cmp::Ordering::Equal => "[loop below]",
+                    std::cmp::Ordering::Greater => "[bend left] ",
+                };
+                let label = match special {
+                    EpsilonType::None => r"$\epsilon$".to_string(),
+                    EpsilonType::StartAnchor => r"{\textasciicircum}".to_string(),
+                    EpsilonType::EndAnchor => r"\$".to_string(),
+                    EpsilonType::StartCapture(group) => format!("{group}("),
+                    EpsilonType::EndCapture(group) => format!("){group}"),
+                };
+                transition_parts.push(format!(
+                    "\\path[->] (q{i}) edge {bend} node {{{label}}} (q{to});\n"
+                ));
+            }
         }
-        for EpsilonTransition { from, to, special } in &self.epsilons {
-            let bend = match to.cmp(from) {
-                std::cmp::Ordering::Less => "[bend left] ",
-                std::cmp::Ordering::Equal => "[loop below]",
-                std::cmp::Ordering::Greater => "[bend left] ",
-            };
-            let label = match special {
-                EpsilonType::None => r"$\epsilon$".to_string(),
-                EpsilonType::StartAnchor => r"{\textasciicircum}".to_string(),
-                EpsilonType::EndAnchor => r"\$".to_string(),
-                EpsilonType::StartCapture(group) => format!("{group}("),
-                EpsilonType::EndCapture(group) => format!("){group}"),
-            };
-            text_parts.push(format!(
-                "\\path[->] (q{from}) edge {bend} node {{{label}}} (q{to});\n"
-            ));
-        }
+        text_parts.extend_from_slice(&transition_parts);
 
         text_parts.push("\\end{tikzpicture}\n".into());
         if include_doc {
@@ -773,36 +825,46 @@ impl WorkingNFA {
 
     /// Using the classical NFA algorithm to do a simple boolean test on a string.
     pub fn test(&self, text: &str) -> bool {
-        let mut list = vec![false; self.states];
-        let mut new_list = vec![false; self.states];
+        let mut list = vec![false; self.states.len()];
+        let mut new_list = vec![false; self.states.len()];
         list[0] = true;
 
         // Adds all states reachable by epsilon transitions
-        let propogate_epsilon = |list: &mut Vec<bool>, idx: usize| loop {
-            let mut has_new = false;
-            for EpsilonTransition { from, to, special } in &self.epsilons {
-                if list[*from]
-                    && !list[*to]
-                    && (match special {
-                        EpsilonType::StartAnchor => idx == 0,
-                        EpsilonType::EndAnchor => idx == text.len(),
-                        _ => true,
-                    })
-                {
-                    list[*to] = true;
-                    has_new = true;
+        let propogate_epsilon = |list: &mut Vec<bool>, idx: usize| {
+            let mut stack: Vec<usize> = list
+                .iter()
+                .enumerate()
+                .filter_map(|(i, set)| set.then_some(i))
+                .collect();
+
+            while let Some(from) = stack.pop() {
+                for EpsilonTransition { to, special } in &self.states[from].epsilons {
+                    if list[from]
+                        && !list[*to]
+                        && (match special {
+                            EpsilonType::StartAnchor => idx == 0,
+                            EpsilonType::EndAnchor => idx == text.len(),
+                            _ => true,
+                        })
+                    {
+                        stack.push(*to);
+                        list[*to] = true;
+                    }
                 }
-            }
-            if !has_new {
-                break;
             }
         };
 
         for (i, c) in text.char_indices() {
             propogate_epsilon(&mut list, i);
-            for WorkingTransition { from, to, symbol } in &self.transitions {
-                if list[*from] && symbol.check(c) {
-                    new_list[*to] = true;
+            for (from, state) in self.states.iter().enumerate() {
+                if !list[from] {
+                    continue;
+                }
+
+                for WorkingTransition { to, symbol } in &state.transitions {
+                    if symbol.check(c) {
+                        new_list[*to] = true;
+                    }
                 }
             }
             let tmp = list;
@@ -816,9 +878,14 @@ impl WorkingNFA {
 }
 impl std::fmt::Display for WorkingNFA {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{} states:", self.states)?;
-        for t in &self.transitions {
-            writeln!(f, "  {t}")?;
+        for (i, state) in self.states.iter().enumerate() {
+            writeln!(f, "State {i}:")?;
+            for e in &state.epsilons {
+                writeln!(f, "  {e}")?;
+            }
+            for t in &state.transitions {
+                writeln!(f, "  {t}")?;
+            }
         }
         return Ok(());
     }
@@ -832,15 +899,16 @@ mod tests {
     #[test]
     fn abbc_raw() {
         let nfa = WorkingNFA {
-            transitions: vec![
-                WorkingTransition::new(0, 1, 'a'.into()),
-                WorkingTransition::new(1, 2, 'b'.into()),
-                WorkingTransition::new(2, 3, 'c'.into()),
+            states: vec![
+                WorkingState::new().with_transition(1, 'a'.into()),
+                WorkingState::new().with_transition(2, 'b'.into()),
+                WorkingState::new()
+                    .with_transition(3, 'c'.into())
+                    .with_epsilon(1),
+                WorkingState::new(),
             ],
-            epsilons: vec![EpsilonTransition::new(2, 1)],
-            states: 4,
         };
-        // println!("{}", nfa.to_tikz(true));
+        println!("{}", nfa.to_tikz(true));
 
         assert!(nfa.test("abc"));
         assert!(nfa.test("abbc"));
@@ -859,7 +927,7 @@ mod tests {
         let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere, &Config::default());
         assert_eq!(capture_groups, 2);
         let nfa = WorkingNFA::new(&tree);
-        // println!("{}", nfa.to_tikz(true));
+        println!("{}", nfa.to_tikz(true));
 
         assert!(nfa.test("012-345-6789"));
         assert!(nfa.test("987-654-3210"));
@@ -917,7 +985,7 @@ mod tests {
         let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere, &Config::default());
         assert_eq!(capture_groups, 1);
         let nfa = WorkingNFA::new(&tree);
-        // println!("{}", nfa.to_tikz(true));
+        println!("{}", nfa.to_tikz(true));
 
         assert!(nfa.test("a"));
         assert!(nfa.test("b"));
