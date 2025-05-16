@@ -1,10 +1,6 @@
-use quote::{quote, ToTokens};
-
-/// This recognizes "true" regular expressions, meaning implicit anchors and no capture groups.
-/// Capture groups are treated as simple concatenation.
-/// However, it also includes additional stuff like special start/end anchors
 use crate::parse_tree::Atom;
 use crate::simplified_tree::SimplifiedTreeNode;
+use quote::{quote, ToTokens};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EpsilonType {
@@ -362,7 +358,7 @@ impl WorkingNFA {
     }
     /// Recursively builds an inefficient but valid NFA based loosely on Thompson's Algorithm.
     ///
-    /// Should be optimized using [`NFA::optimize_pass`]
+    /// Should be optimized using [`WorkingNFA::optimize_pass`]
     fn build(tree: &SimplifiedTreeNode) -> WorkingNFA {
         return match tree {
             SimplifiedTreeNode::Empty => WorkingNFA::build_empty(),

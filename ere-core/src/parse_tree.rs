@@ -1,4 +1,7 @@
-use std::fmt::{Display, Write};
+use std::{
+    fmt::{Display, Write},
+    ops::RangeInclusive,
+};
 
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
@@ -303,7 +306,7 @@ impl ToTokens for CharClass {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Clone)]
 pub enum Atom {
     /// Includes normal char and escaped chars
     NormalChar(char),
@@ -398,6 +401,96 @@ impl Atom {
             Atom::NonmatchingList(vec) => !vec.into_iter().any(|b| b.check(c)),
         };
     }
+    /// Produces the sorted, minimal set of ranges to represent the Atom.
+    ///
+    /// Example:
+    /// ```
+    /// assert_eq!(
+    ///     Atom::take("[a-z0-12-9A-XYZ[:xdigit:]]").unwrap().1.to_ranges(),
+    ///     vec!['0'..='9', 'A'..='Z', 'a'..='z'],
+    /// );
+    /// ```
+    pub fn to_ranges(&self) -> Vec<RangeInclusive<char>> {
+        /// Sorts and combines ranges
+        fn combine_ranges_chars(
+            mut ranges: Vec<RangeInclusive<char>>,
+        ) -> Vec<RangeInclusive<char>> {
+            ranges.sort_by_key(|range| *range.start());
+            let Some((first_range, terms)) = ranges.split_first_chunk::<1>() else {
+                return Vec::new();
+            };
+            let mut reduced_terms = Vec::new();
+
+            let mut current_start = *first_range[0].start();
+            let mut current_end = *first_range[0].end();
+            for term in terms {
+                if term.is_empty() {
+                    continue;
+                } else if *term.start() <= current_end || (current_end..=*term.start()).count() == 2
+                {
+                    // the next term is overlapping (or starts immediately after) so combine them.
+                    current_end = std::cmp::max(current_end, *term.end());
+                } else {
+                    reduced_terms.push(current_start.clone()..=current_end.clone());
+                    current_start = *term.start();
+                    current_end = *term.end();
+                }
+            }
+            reduced_terms.push(current_start.clone()..=current_end.clone());
+            return reduced_terms;
+        }
+
+        return match self {
+            Atom::NormalChar(c) => vec![*c..=*c],
+            Atom::CharClass(CharClass::Dot) => vec!['\x01'..=char::MAX],
+            Atom::MatchingList(_terms) => {
+                let mut terms = Vec::new();
+                for term in _terms {
+                    match term {
+                        crate::parse_tree::BracketExpressionTerm::Single(c) => {
+                            terms.push(*c..=*c);
+                        }
+                        crate::parse_tree::BracketExpressionTerm::Range(a, b) => {
+                            terms.push(*a..=*b);
+                        }
+                        crate::parse_tree::BracketExpressionTerm::CharClass(class) => {
+                            terms.extend_from_slice(class.to_ranges());
+                        }
+                    }
+                }
+                combine_ranges_chars(terms)
+            }
+            Atom::NonmatchingList(terms) => {
+                let mut ranges = Vec::new();
+                ranges.push('\0'..=char::MAX);
+                for term in terms.iter().flat_map(|term| term.to_ranges()) {
+                    ranges = ranges
+                        .iter()
+                        .flat_map(|range| {
+                            if term.end() < range.start() || range.end() < term.start() {
+                                return vec![range.clone()]; // unchanged
+                            }
+                            let mut out = Vec::new();
+                            if range.start() < term.start() {
+                                let mut new_range = *range.start()..=*term.start();
+                                new_range.next_back();
+                                out.push(new_range); // part at start
+                            }
+                            if term.end() < range.end() {
+                                let mut new_range = *term.end()..=*range.end();
+                                new_range.next();
+                                out.push(new_range); // part at end
+                            }
+                            return out;
+                        })
+                        .collect();
+                }
+
+                ranges.sort_by_key(|range: &RangeInclusive<char>| *range.start());
+                ranges
+            }
+        };
+    }
 }
 impl Display for Atom {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -422,6 +515,12 @@ impl Display for Atom {
         };
     }
 }
+impl PartialEq for Atom {
+    fn eq(&self, other: &Self) -> bool {
+        return self.to_ranges() == other.to_ranges();
+    }
+}
+impl Eq for Atom {}
 
 /// From https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap09.html#tag_09_03_05
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -452,6 +551,27 @@ pub enum BracketCharClass {
     HexDigit,
 }
 impl BracketCharClass {
+    pub const fn to_ranges(&self) -> &'static [RangeInclusive<char>] {
+        return match self {
+            BracketCharClass::Alphanumeric => &['0'..='9', 'A'..='Z', 'a'..='z'],
+            BracketCharClass::Control => &['\0'..='\x1f', '\x7f'..='\x7f'],
+            BracketCharClass::Lower => &['a'..='z'],
+            BracketCharClass::Space => &['\t'..='\t', '\x0a'..='\x0d', ' '..=' '],
+            BracketCharClass::Alphabet => &['A'..='Z', 'a'..='z'],
+            BracketCharClass::Digit => &['0'..='9'],
+            BracketCharClass::Print => &['\x20'..='\x7E'],
+            BracketCharClass::Upper => &['A'..='Z'],
+            BracketCharClass::Blank => &['\t'..='\t', ' '..=' '],
+            BracketCharClass::Graphic => &['\x21'..='\x7e'],
+            BracketCharClass::Punctuation => &[
+                '\x21'..='\x2f',
+                '\x3a'..='\x40',
+                '\x5b'..='\x60',
+                '\x7b'..='\x7e',
+            ],
+            BracketCharClass::HexDigit => &['0'..='9', 'A'..='F', 'a'..='f'],
+        };
+    }
     /// Checks matches to the char classes.
     pub const fn check_ascii(&self, c: char) -> bool {
         return match self {
@@ -559,6 +679,15 @@ impl BracketExpressionTerm {
             BracketExpressionTerm::Single(a) => *a == c,
             BracketExpressionTerm::Range(a, b) => *a <= c && c <= *b,
             BracketExpressionTerm::CharClass(class) => class.check_ascii(c),
+        };
+    }
+    pub(crate) fn to_ranges(&self) -> Vec<RangeInclusive<char>> {
+        return match self {
+            BracketExpressionTerm::Single(c) => vec![*c..=*c],
+            BracketExpressionTerm::Range(a, b) => vec![*a..=*b],
+            BracketExpressionTerm::CharClass(bracket_char_class) => {
+                bracket_char_class.to_ranges().to_vec()
+            }
         };
     }
 }
@@ -785,5 +914,83 @@ mod tests {
                 ])
             ))
         );
+    }
+
+    #[test]
+    fn atom_to_ranges_normal_char() {
+        let (_, atom) = Atom::take("a").unwrap();
+        assert_eq!(atom.to_ranges(), vec!['a'..='a']);
+    }
+
+    #[test]
+    fn atom_to_ranges_matching_list() {
+        let (_, atom) = Atom::take("[a-z]").unwrap();
+        assert_eq!(atom.to_ranges(), vec!['a'..='z']);
+
+        let (_, atom) = Atom::take("[0-45-9]").unwrap();
+        assert_eq!(atom.to_ranges(), vec!['0'..='9']);
+
+        let (_, atom) = Atom::take("[5-90-4]").unwrap();
+        assert_eq!(atom.to_ranges(), vec!['0'..='9']);
+
+        let (_, atom) = Atom::take("[0-46-89]").unwrap();
+        assert_eq!(atom.to_ranges(), vec!['0'..='4', '6'..='9']);
+
+        let (_, atom) = Atom::take("[96-80-4]").unwrap();
+        assert_eq!(atom.to_ranges(), vec!['0'..='4', '6'..='9']);
+    }
+
+    #[test]
+    fn atom_to_ranges_nonmatching_list() {
+        let (_, atom) = Atom::take("[^b-y]").unwrap();
+        assert_eq!(atom.to_ranges(), vec!['\0'..='a', 'z'..=char::MAX]);
+
+        let (_, atom) = Atom::take("[^1-45-8]").unwrap();
+        assert_eq!(atom.to_ranges(), vec!['\0'..='0', '9'..=char::MAX]);
+
+        let (_, atom) = Atom::take("[^5-81-4]").unwrap();
+        assert_eq!(atom.to_ranges(), vec!['\0'..='0', '9'..=char::MAX]);
+
+        let (_, atom) = Atom::take("[^1-486-7]").unwrap();
+        assert_eq!(
+            atom.to_ranges(),
+            vec!['\0'..='0', '5'..='5', '9'..=char::MAX]
+        );
+
+        let (_, atom) = Atom::take("[^86-71-4]").unwrap();
+        assert_eq!(
+            atom.to_ranges(),
+            vec!['\0'..='0', '5'..='5', '9'..=char::MAX]
+        );
+    }
+
+    #[test]
+    fn atom_eq() {
+        assert_eq!(
+            Atom::take("[a-z]").unwrap().1,
+            Atom::take("[a-kl-z]").unwrap().1
+        );
+
+        assert_eq!(
+            Atom::take("[a-z]").unwrap().1,
+            Atom::take("[l-za-k]").unwrap().1
+        );
+
+        assert_eq!(Atom::take("a").unwrap().1, Atom::take("[a]").unwrap().1);
+
+        assert_eq!(
+            Atom::take("[1-8]").unwrap().1,
+            Atom::take("[^\0-09-\u{10ffff}]").unwrap().1
+        );
+
+        assert_eq!(
+            Atom::take("[[:upper:]]").unwrap().1,
+            Atom::take("[A-Z]").unwrap().1
+        );
+
+        assert_ne!(
+            Atom::take("[a-z]").unwrap().1,
+            Atom::take("[A-Z]").unwrap().1
+        )
     }
 }
