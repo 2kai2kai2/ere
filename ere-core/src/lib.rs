@@ -10,6 +10,7 @@ pub mod parse_tree;
 pub mod pike_vm;
 pub mod simplified_tree;
 pub mod working_nfa;
+pub mod working_u8_nfa;
 
 enum RegexEngines<const N: usize> {
     NFA(nfa_static::NFAStatic<N>),
