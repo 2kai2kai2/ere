@@ -783,88 +783,38 @@ impl U8NFA {
     /// If `include_doc` is `true`, will include the headers.
     /// Otherwise, you should include `\usepackage{tikz}` and `\usetikzlibrary{automata, positioning}`.
     pub fn to_tikz(&self, include_doc: bool) -> String {
-        // TODO: make the layout better
-        fn escape_latex(text: String) -> String {
-            return text
-                .chars()
-                .map(|c| match c {
-                    '\\' => r"{\textbackslash}".to_string(),
-                    '&' => r"\&".to_string(),
-                    '%' => r"\%".to_string(),
-                    '$' => r"\$".to_string(),
-                    '#' => r"\#".to_string(),
-                    '_' => r"\_".to_string(),
-                    '{' => r"\{".to_string(),
-                    '}' => r"\}".to_string(),
-                    '~' => r"{\textasciitilde}".to_string(),
-                    '^' => r"{\textasciicircum}".to_string(),
-                    c => c.to_string(),
-                })
-                .collect();
-        }
-
-        let mut text_parts: Vec<String> = Vec::new();
-        if include_doc {
-            text_parts.push(
-                "\\documentclass{standalone}\n\\usepackage{tikz}\n\\usetikzlibrary{automata, positioning}\n\\begin{document}\n"
-                .into(),
-            );
-        }
-        text_parts.push("\\begin{tikzpicture}[node distance=2cm, auto]\n".into());
-
-        let mut transition_parts = Vec::new();
-
-        for (i, state) in self.states.iter().enumerate() {
-            if i == 0 {
-                text_parts.push("\\node[state, initial](q0){$q_0$};\n".into());
-            } else if i + 1 == self.states.len() {
-                text_parts.push(format!(
-                    "\\node[state, accepting, right of=q{}](q{i}){{$q_{{{i}}}$}};\n",
-                    i - 1,
-                ));
-            } else {
-                text_parts.push(format!(
-                    "\\node[state, right of=q{}](q{i}){{$q_{{{i}}}$}};\n",
-                    i - 1,
-                ));
-            }
-
-            for U8Transition { to, symbol } in &state.transitions {
-                let bend = match to.cmp(&i) {
-                    std::cmp::Ordering::Less => "[bend left] ",
-                    std::cmp::Ordering::Equal => "[loop below]",
-                    std::cmp::Ordering::Greater => "[bend left] ",
-                };
-                transition_parts.push(format!(
-                    "\\path[->] (q{i}) edge {bend} node {{{}}} (q{to});\n",
-                    escape_latex(symbol.to_string()),
-                ));
-            }
-            for EpsilonTransition { to, special } in &state.epsilons {
-                let bend = match to.cmp(&i) {
-                    std::cmp::Ordering::Less => "[bend left] ",
-                    std::cmp::Ordering::Equal => "[loop below]",
-                    std::cmp::Ordering::Greater => "[bend left] ",
-                };
-                let label = match special {
+        let map_state = |(i, state): (usize, &U8State)| -> crate::visualization::LatexGraphState {
+            let transitions =
+                state
+                    .transitions
+                    .iter()
+                    .map(|t| crate::visualization::LatexGraphTransition {
+                        label: crate::visualization::escape_latex(t.symbol.to_string()),
+                        to: t.to,
+                    });
+            let epsilons = state.epsilons.iter().map(|e| {
+                let label = match e.special {
                     EpsilonType::None => r"$\epsilon$".to_string(),
                     EpsilonType::StartAnchor => r"{\textasciicircum}".to_string(),
                     EpsilonType::EndAnchor => r"\$".to_string(),
                     EpsilonType::StartCapture(group) => format!("{group}("),
                     EpsilonType::EndCapture(group) => format!("){group}"),
                 };
-                transition_parts.push(format!(
-                    "\\path[->] (q{i}) edge {bend} node {{{label}}} (q{to});\n"
-                ));
-            }
-        }
-        text_parts.extend_from_slice(&transition_parts);
+                return crate::visualization::LatexGraphTransition { label, to: e.to };
+            });
+            let transitions = transitions.chain(epsilons).collect();
+            return crate::visualization::LatexGraphState {
+                label: format!("q{i}"),
+                transitions,
+                initial: i == 0,
+                accept: i + 1 == self.states.len(),
+            };
+        };
 
-        text_parts.push("\\end{tikzpicture}\n".into());
-        if include_doc {
-            text_parts.push("\\end{document}\n".into());
-        }
-        return text_parts.into_iter().collect();
+        let graph = crate::visualization::LatexGraph {
+            states: self.states.iter().enumerate().map(map_state).collect(),
+        };
+        return graph.to_tikz(include_doc);
     }
 
     /// Using the classical NFA algorithm to do a simple boolean test on a string.
