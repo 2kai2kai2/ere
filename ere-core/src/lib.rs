@@ -8,6 +8,7 @@ pub mod config;
 pub mod nfa_static;
 pub mod parse_tree;
 pub mod pike_vm;
+pub mod pike_vm_u8;
 pub mod simplified_tree;
 pub mod visualization;
 pub mod working_nfa;
@@ -16,6 +17,7 @@ pub mod working_u8_nfa;
 enum RegexEngines<const N: usize> {
     NFA(nfa_static::NFAStatic<N>),
     PikeVM(pike_vm::PikeVM<N>),
+    U8PikeVM(pike_vm_u8::U8PikeVM<N>),
 }
 
 /// A regular expression (specifically, a [POSIX ERE](https://en.wikibooks.org/wiki/Regular_Expressions/POSIX-Extended_Regular_Expressions)).
@@ -31,6 +33,7 @@ impl<const N: usize> Regex<N> {
         return match &self.0 {
             RegexEngines::NFA(nfa) => nfa.test(text),
             RegexEngines::PikeVM(pike_vm) => pike_vm.test(text),
+            RegexEngines::U8PikeVM(pike_vm) => pike_vm.test(text),
         };
     }
 
@@ -38,6 +41,7 @@ impl<const N: usize> Regex<N> {
         return match &self.0 {
             RegexEngines::NFA(nfa) => unimplemented!(),
             RegexEngines::PikeVM(pike_vm) => pike_vm.exec(text),
+            RegexEngines::U8PikeVM(pike_vm) => pike_vm.exec(text),
         };
     }
 }
@@ -45,13 +49,17 @@ impl<const N: usize> std::fmt::Display for Regex<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         return match &self.0 {
             RegexEngines::NFA(nfastatic) => nfastatic.fmt(f),
-            RegexEngines::PikeVM(pike_vm) => f.write_str("<Compiled VM>"),
+            RegexEngines::PikeVM(_) => f.write_str("<Compiled VM>"),
+            RegexEngines::U8PikeVM(_) => f.write_str("<Compiled VM>"),
         };
     }
 }
 
 pub const fn __construct_pikevm_regex<const N: usize>(vm: pike_vm::PikeVM<N>) -> Regex<N> {
     return Regex(RegexEngines::PikeVM(vm));
+}
+pub const fn __construct_u8pikevm_regex<const N: usize>(vm: pike_vm_u8::U8PikeVM<N>) -> Regex<N> {
+    return Regex(RegexEngines::U8PikeVM(vm));
 }
 pub const fn __construct_nfa_regex<const N: usize>(nfa: nfa_static::NFAStatic<N>) -> Regex<N> {
     return Regex(RegexEngines::NFA(nfa));
@@ -63,7 +71,21 @@ pub fn __compile_regex(stream: TokenStream) -> TokenStream {
     let nfa = working_nfa::WorkingNFA::new(&tree);
     // println!("{}", nfa.to_tikz(true));
 
-    if true {
+    // Currently use a conservative check: only use u8 engines when it will only match ascii strings
+    fn is_state_ascii(state: &working_nfa::WorkingState) -> bool {
+        return state
+            .transitions
+            .iter()
+            .flat_map(|t| t.symbol.to_ranges())
+            .all(|range| range.end().is_ascii());
+    }
+    let is_ascii = nfa.states.iter().all(is_state_ascii);
+
+    if is_ascii {
+        let nfa = working_u8_nfa::U8NFA::new(&nfa);
+        let engine = pike_vm_u8::serialize_pike_vm_token_stream(&nfa);
+        return quote! { ::ere_core::__construct_u8pikevm_regex(#engine) }.into();
+    } else if true {
         let engine = pike_vm::serialize_pike_vm_token_stream(&nfa);
         return quote! { ::ere_core::__construct_pikevm_regex(#engine) }.into();
     } else {

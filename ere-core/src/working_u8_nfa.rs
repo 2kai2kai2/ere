@@ -1,7 +1,6 @@
 use crate::working_nfa::{EpsilonType, WorkingNFA};
 use crate::{parse_tree::Atom, working_nfa::EpsilonTransition};
-use quote::{quote, ToTokens};
-use std::{fmt::Write, ops::RangeInclusive};
+use std::ops::RangeInclusive;
 use std::{usize, vec};
 
 /// Sorts and combines ranges
@@ -160,8 +159,17 @@ fn char_range_to_u8_ranges(range: RangeInclusive<char>) -> Vec<Vec<RangeInclusiv
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct U8Atom(RangeInclusive<u8>);
 impl U8Atom {
+    #[inline]
     pub fn check(&self, c: u8) -> bool {
         return self.0.contains(&c);
+    }
+    #[inline]
+    pub const fn start(&self) -> u8 {
+        return *self.0.start();
+    }
+    #[inline]
+    pub const fn end(&self) -> u8 {
+        return *self.0.end();
     }
 }
 impl std::fmt::Display for U8Atom {

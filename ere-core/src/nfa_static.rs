@@ -35,7 +35,7 @@ impl AtomStatic {
                 ere_core::nfa_static::AtomStatic::NormalChar(#c)
             },
             Atom::CharClass(char_class) => quote! {
-                ere_core::nfa_static::AtomStatic::CharClass(#char_class),
+                ere_core::nfa_static::AtomStatic::CharClass(#char_class)
             },
             Atom::MatchingList(bracket_expression_terms) => {
                 let terms: proc_macro2::TokenStream = bracket_expression_terms

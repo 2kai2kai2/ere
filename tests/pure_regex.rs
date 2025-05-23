@@ -94,3 +94,18 @@ fn needle() {
     assert!(!NEEDLE_REGEX.test("npuowahpeoifjap098uq09p3ior"));
     assert!(!NEEDLE_REGEX.test("nedle"));
 }
+
+#[test]
+fn dot() {
+    const DOT_REGEX: Regex = compile_regex!("^.$");
+
+    assert!(DOT_REGEX.test("a"));
+    assert!(DOT_REGEX.test("b"));
+    assert!(DOT_REGEX.test("©"));
+    assert!(DOT_REGEX.test("\u{0001}"));
+
+    assert!(!DOT_REGEX.test("\0"));
+    assert!(!DOT_REGEX.test("12"));
+    assert!(!DOT_REGEX.test("å©"));
+    assert!(!DOT_REGEX.test(""));
+}
