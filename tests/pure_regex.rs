@@ -151,3 +151,35 @@ fn dot() {
     assert!(!DOT_REGEX.test("å©"));
     assert!(!DOT_REGEX.test(""));
 }
+
+#[test]
+fn greedy() {
+    const REGEX1: Regex<2> = compile_regex!(r"^(a|ab)b?cd$");
+    assert_eq!(REGEX1.exec("abcd"), Some([Some("abcd"), Some("a")]));
+
+    const REGEX2: Regex<2> = compile_regex!(r"^(ab|a)b?cd$");
+    assert_eq!(REGEX2.exec("abcd"), Some([Some("abcd"), Some("ab")]));
+
+    const REGEX3: Regex<3> = compile_regex!(r"^(a*)(a*)$");
+    assert_eq!(
+        REGEX3.exec("aaaaaaaa"),
+        Some([Some("aaaaaaaa"), Some("aaaaaaaa"), Some("")])
+    );
+
+    const REGEX4: Regex<1> = compile_regex!(r"a*");
+    assert_eq!(REGEX4.exec("aaaaaaaa"), Some([Some("aaaaaaaa")]));
+    assert_eq!(REGEX4.exec("aabaaaaaa"), Some([Some("aa")]));
+
+    // non-greedy
+    const REGEX5: Regex<1> = compile_regex!(r"a*?");
+    assert_eq!(REGEX5.exec("aaaaaaaa"), Some([Some("")]));
+
+    const REGEX6: Regex<1> = compile_regex!(r"a*?|a*");
+    assert_eq!(REGEX6.exec("aaaaaaaa"), Some([Some("")]));
+    assert_eq!(REGEX6.exec("aaaabaaaa"), Some([Some("")]));
+
+    // Matches the second alternation because it is greedy, so it matches the `a` first
+    // and does not wait to find the `b`. This is consistent with other engines.
+    const REGEX7: Regex<1> = compile_regex!(r"ba*?b|a*");
+    assert_eq!(REGEX7.exec("abaaabaaaa"), Some([Some("a")]));
+}

@@ -372,7 +372,7 @@ impl WorkingNFA {
     /// Recursively builds an inefficient but valid NFA based loosely on Thompson's Algorithm.
     ///
     /// Should be optimized using [`WorkingNFA::optimize_pass`]
-    fn build(tree: &SimplifiedTreeNode) -> WorkingNFA {
+    pub fn build(tree: &SimplifiedTreeNode) -> WorkingNFA {
         return match tree {
             SimplifiedTreeNode::Empty => WorkingNFA::nfa_empty(),
             SimplifiedTreeNode::Symbol(c) => WorkingNFA::nfa_symbol(c),

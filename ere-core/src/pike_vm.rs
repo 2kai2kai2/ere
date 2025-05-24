@@ -1,13 +1,10 @@
 //! Implements a Pike VM-like regex engine.
 
-use std::collections::VecDeque;
-
-use quote::quote;
-
 use crate::{
     nfa_static,
     working_nfa::{EpsilonType, WorkingNFA, WorkingTransition},
 };
+use quote::quote;
 
 #[derive(Clone, Debug)]
 pub struct PikeVMThread<const N: usize, S: Send + Sync + Copy + Eq> {
@@ -190,6 +187,7 @@ impl ThreadUpdates {
     /// Creates a block which takes `thread` from its local context, updates it using `self` (compile-time),
     /// and appends it to `out` from its local context.
     pub fn serialize_thread_update_exec(&self) -> proc_macro2::TokenStream {
+        let new_state_idx = self.state;
         let new_state = vmstate_label(self.state);
         let mut capture_updates = proc_macro2::TokenStream::new();
         for (i, (start, end)) in self.update_captures.iter().cloned().enumerate() {
@@ -205,14 +203,17 @@ impl ThreadUpdates {
             }
         }
 
-        return quote! {{
-            let mut new_thread = thread.clone();
-            new_thread.state = VMStates::#new_state;
+        return quote! {
+            if !occupied_states[#new_state_idx] {
+                let mut new_thread = thread.clone();
+                new_thread.state = VMStates::#new_state;
 
-            #capture_updates
+                #capture_updates
 
-            out.push(new_thread);
-        }};
+                out.push(new_thread);
+                occupied_states[#new_state_idx] = true;
+            }
+        };
     }
 }
 
@@ -220,16 +221,13 @@ fn calculate_epsilon_propogations(nfa: &WorkingNFA, state: usize) -> Vec<ThreadU
     let WorkingNFA { states } = nfa;
     let capture_groups = nfa.num_capture_groups();
     // reduce epsilons to occur in a single step
-    let mut new_threads = vec![ThreadUpdates {
-        state,
-        update_captures: vec![(false, false); capture_groups],
-        start_only: false,
-        end_only: false,
-    }];
-    let mut queue = VecDeque::new();
-    queue.push_back(new_threads[0].clone());
-    while let Some(thread) = queue.pop_front() {
-        // enumerate next step of new threads
+    let mut new_threads = vec![];
+    fn traverse(
+        thread: ThreadUpdates,
+        states: &Vec<crate::working_nfa::WorkingState>,
+        out: &mut Vec<ThreadUpdates>,
+    ) {
+        out.push(thread.clone());
         for e in &states[thread.state].epsilons {
             let mut new_thread = thread.clone();
             new_thread.state = e.to;
@@ -245,13 +243,21 @@ fn calculate_epsilon_propogations(nfa: &WorkingNFA, state: usize) -> Vec<ThreadU
                 }
             }
 
-            if new_threads.contains(&new_thread) {
-                continue;
+            if !out.contains(&new_thread) {
+                traverse(new_thread, states, out);
             }
-            queue.push_back(new_thread.clone());
-            new_threads.push(new_thread);
         }
-    }
+    };
+    traverse(
+        ThreadUpdates {
+            state,
+            update_captures: vec![(false, false); capture_groups],
+            start_only: false,
+            end_only: false,
+        },
+        states,
+        &mut new_threads,
+    );
     return new_threads;
 }
 
@@ -261,6 +267,7 @@ fn serialize_pike_vm_epsilon_propogation(
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let WorkingNFA { states } = nfa;
     let capture_groups = nfa.num_capture_groups();
+    let num_states = states.len();
     let excluded_states = compute_excluded_states(nfa);
 
     // Generate code to propogate/split a thread according to epsilon transitions
@@ -370,6 +377,7 @@ fn serialize_pike_vm_epsilon_propogation(
         ) -> ::std::vec::Vec<::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>> {
             let is_start = idx == 0;
             let is_end = idx == len;
+            let mut occupied_states = ::std::vec![false; #num_states];
             let mut out = ::std::vec::Vec::<::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>>::new();
             for thread in threads {
                 match thread.state {

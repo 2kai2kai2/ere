@@ -69,7 +69,6 @@ pub fn __compile_regex(stream: TokenStream) -> TokenStream {
     let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
-    // println!("{}", nfa.to_tikz(true));
 
     // Currently use a conservative check: only use u8 engines when it will only match ascii strings
     fn is_state_ascii(state: &working_nfa::WorkingState) -> bool {

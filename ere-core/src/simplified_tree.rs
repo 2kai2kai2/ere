@@ -143,7 +143,7 @@ impl SimplifiedTreeNode {
                     SimplifiedTreeNode::from_ere_expression(expr, group_num, config);
                 let longest = config.quantifiers_prefer_longest() ^ quantifier.alt;
                 let part = match &quantifier.quantifier {
-                    QuantifierType::Star => child.star(quantifier.alt),
+                    QuantifierType::Star => child.star(longest),
                     QuantifierType::Plus => child.clone().concat(child.star(longest)),
                     QuantifierType::QuestionMark => child.optional(longest),
                     QuantifierType::Multiple(n) => child.repeat(*n as usize),

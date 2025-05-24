@@ -64,9 +64,9 @@ impl LatexGraph {
                 text_parts.push(format!("\\node[state{modifiers}](q0){{$q_0$}};\n"));
             } else {
                 text_parts.push(format!(
-                    "\\node[state{modifiers}, right of=q{}](q{i}){{$q_{{{}}}$}};\n",
+                    "\\node[state{modifiers}, right of=q{}](q{i}){{$q_{{{i}}}$}};\n",
                     i - 1,
-                    state.label
+                    // state.label
                 ));
             }
 
