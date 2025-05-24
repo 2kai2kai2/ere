@@ -16,5 +16,6 @@ pub use ::ere_macros::*;
 pub mod prelude {
     pub use ::ere_core::Regex;
     pub use ::ere_macros::compile_regex;
+    #[cfg(feature = "unstable-attr-regex")]
     pub use ::ere_macros::regex;
 }

@@ -94,6 +94,7 @@ pub fn __compile_regex(stream: TokenStream) -> TokenStream {
     };
 }
 
+#[cfg(feature = "unstable-attr-regex")]
 pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStream {
     let ere: parse_tree::ERE = syn::parse_macro_input!(attr);
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);

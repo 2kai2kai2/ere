@@ -26,6 +26,61 @@ pub fn compile_regex(stream: TokenStream) -> TokenStream {
     return ere_core::__compile_regex(stream);
 }
 
+/// EXPERIMENTAL: this attribute provides an alternate syntax with finer control for creating regexes.
+///
+/// Compared with [`compile_regex!`], this allows the type system to know which capture groups
+/// should be optional and which should not.
+///
+/// For example:
+///
+/// ```
+/// use ere_macros::regex;
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// #[regex(r"^#?([[:xdigit:]]{2})([[:xdigit:]]{2})([[:xdigit:]]{2})([[:xdigit:]]{2})?$")]
+/// pub struct HexColor<'a>(
+///     pub &'a str,
+///     pub &'a str,
+///     pub &'a str,
+///     pub &'a str,
+///     pub Option<&'a str>,
+/// );
+///
+/// assert!(HexColor::test("#1F1F1F"));
+/// assert!(HexColor::test("#1F1F1F80"));
+/// assert!(HexColor::test("20202020"));
+///
+/// assert_eq!(
+///     HexColor::exec("#112233"),
+///     Some(HexColor(
+///         "#112233",
+///         "11",
+///         "22",
+///         "33",
+///         None,
+///     )),
+/// );
+/// assert_eq!(
+///     HexColor::exec("#11223344"),
+///     Some(HexColor(
+///         "#11223344",
+///         "11",
+///         "22",
+///         "33",
+///         Some("44"),
+///     )),
+/// );
+/// ```
+///
+/// ---
+///
+/// Note that it is required to specify the fields with the proper type
+/// (i.e. `&'a str` or `Option<&'a str>` depending on the capture group)
+/// and the lifetime should be the first generic argument on the struct.
+///
+/// The field for the 0th capture group should never be an `Option` since if there is a match,
+/// it will always contain the entire match (and otherwise `exec` returns `None`).
+#[cfg(feature = "unstable-attr-regex")]
 #[proc_macro_attribute]
 pub fn regex(attr: TokenStream, input: TokenStream) -> TokenStream {
     return ere_core::__compile_regex_attr(attr, input);

@@ -16,6 +16,7 @@ fn phone_number() {
     assert!(!PHONE_REGEX.test("1 555-555-5555"));
 }
 
+#[cfg(feature = "unstable-attr-regex")]
 #[test]
 fn phone_number_struct() {
     #[derive(PartialEq, Eq, Debug)]
