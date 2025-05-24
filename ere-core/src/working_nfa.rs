@@ -1008,4 +1008,13 @@ mod tests {
         assert!(!nfa.test("09"));
         assert!(!nfa.test("d"));
     }
+
+    #[test]
+    fn asdf() {
+        let ere = ERE::parse_str(r"ba*?b|a*").unwrap();
+        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere, &Config::default());
+        assert_eq!(capture_groups, 1);
+        let nfa = WorkingNFA::new(&tree);
+        println!("{}", nfa.to_tikz(true));
+    }
 }

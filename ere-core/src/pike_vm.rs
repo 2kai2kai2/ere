@@ -5,11 +5,41 @@ use crate::{
     working_nfa::{EpsilonType, WorkingNFA, WorkingTransition},
 };
 use quote::quote;
+use std::fmt::Write;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PikeVMThread<const N: usize, S: Send + Sync + Copy + Eq> {
     pub state: S,
     pub captures: [(usize, usize); N],
+}
+impl<const N: usize, S: Send + Sync + Copy + Eq + std::fmt::Debug> std::fmt::Debug
+    for PikeVMThread<N, S>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct CapturesDebug<'a, const N: usize>(&'a [(usize, usize); N]);
+        impl<'a, const N: usize> std::fmt::Debug for CapturesDebug<'a, N> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_char('[')?;
+                for (i, endpoints) in self.0.iter().enumerate() {
+                    if i != 0 {
+                        f.write_str(", ")?;
+                    }
+                    match endpoints {
+                        (usize::MAX, usize::MAX) => f.write_str("(_, _)")?,
+                        (start, usize::MAX) => write!(f, "({start}, _)")?,
+                        (usize::MAX, end) => write!(f, "(_, {end})")?,
+                        (start, end) => write!(f, "({start}, {end})")?,
+                    }
+                }
+                return f.write_char(']');
+            }
+        }
+        return f
+            .debug_struct("PikeVMThread")
+            .field("state", &self.state)
+            .field("captures", &CapturesDebug(&self.captures))
+            .finish();
+    }
 }
 
 /// Not exactly the PikeVM, but close enough that I am naming it that.
@@ -247,7 +277,7 @@ fn calculate_epsilon_propogations(nfa: &WorkingNFA, state: usize) -> Vec<ThreadU
                 traverse(new_thread, states, out);
             }
         }
-    };
+    }
     traverse(
         ThreadUpdates {
             state,
@@ -279,8 +309,10 @@ fn serialize_pike_vm_epsilon_propogation(
             // with only epsilon transitions
             continue;
         }
+        // all reachable states with next transition as epsilon
         let mut new_threads = calculate_epsilon_propogations(nfa, i);
-        new_threads.retain(|t| !excluded_states[t.state]);
+        new_threads
+            .retain(|t| !states[t.state].transitions.is_empty() || t.state + 1 == num_states);
 
         // Write epsilon-propogation of threads to the token stream for test
         let start_end_threads: proc_macro2::TokenStream = new_threads
