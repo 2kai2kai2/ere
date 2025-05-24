@@ -1,3 +1,6 @@
+//! Implements the [ERE](https://en.wikibooks.org/wiki/Regular_Expressions/POSIX-Extended_Regular_Expressions) parser
+//! and primitive types (like [`Atom`]).
+
 use std::{
     fmt::{Display, Write},
     ops::RangeInclusive,
@@ -306,6 +309,21 @@ impl ToTokens for CharClass {
     }
 }
 
+/// Represents a part of an [`ERE`] that matches a single character.
+/// For example, a single char `a`, a char class `.`, or a bracket expression `[a-z]`.
+///
+/// Equality checks are semantic:
+/// ```
+/// use ere_core::parse_tree::Atom;
+/// assert_eq!(
+///     "[abcd]".parse::<Atom>(),
+///     "[a-d]".parse::<Atom>(),
+/// );
+/// assert_eq!(
+///     "[a-z]".parse::<Atom>(),
+///     "[[:lower:]]".parse::<Atom>(),
+/// );
+/// ```
 #[derive(Debug, Clone)]
 pub enum Atom {
     /// Includes normal char and escaped chars
@@ -324,6 +342,16 @@ impl From<char> for Atom {
 impl From<CharClass> for Atom {
     fn from(value: CharClass) -> Self {
         return Atom::CharClass(value);
+    }
+}
+impl std::str::FromStr for Atom {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let Some(("", atom)) = Atom::take(s) else {
+            return Err(());
+        };
+        return Ok(atom);
     }
 }
 
@@ -405,8 +433,9 @@ impl Atom {
     ///
     /// Example:
     /// ```
+    /// use ere_core::parse_tree::Atom;
     /// assert_eq!(
-    ///     Atom::take("[a-z0-12-9A-XYZ[:xdigit:]]").unwrap().1.to_ranges(),
+    ///     "[a-z2-9A-X0-1YZ[:xdigit:]]".parse::<Atom>().unwrap().to_ranges(),
     ///     vec!['0'..='9', 'A'..='Z', 'a'..='z'],
     /// );
     /// ```
@@ -522,7 +551,7 @@ impl PartialEq for Atom {
 }
 impl Eq for Atom {}
 
-/// From https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap09.html#tag_09_03_05
+/// From <https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap09.html#tag_09_03_05>
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum BracketCharClass {
     /// `[:alnum:]`

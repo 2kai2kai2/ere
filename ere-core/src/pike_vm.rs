@@ -1,3 +1,5 @@
+//! Implements a Pike VM-like regex engine.
+
 use std::collections::VecDeque;
 
 use quote::quote;

@@ -1,6 +1,8 @@
+//! Implements a simplified intermediate representation of a regular expression.
+
 use crate::{config::Config, parse_tree::*};
 
-/// For translation between our parse tree and https://en.wikipedia.org/wiki/Thompson%27s_construction
+/// For translation between our parsed [`ERE`] and the [`crate::working_nfa::WorkingNFA`]
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SimplifiedTreeNode {
     /// Translates to `epsilon`

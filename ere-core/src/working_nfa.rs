@@ -1,3 +1,5 @@
+//! Implements the primary compile-time intermediate [`WorkingNFA`] structure for optimization.
+
 use crate::parse_tree::Atom;
 use crate::simplified_tree::SimplifiedTreeNode;
 use quote::{quote, ToTokens};
@@ -176,17 +178,20 @@ pub struct WorkingNFA {
     pub(crate) states: Vec<WorkingState>,
 }
 impl WorkingNFA {
-    fn build_empty() -> WorkingNFA {
+    /// Makes an NFA that matches with zero length.
+    fn nfa_empty() -> WorkingNFA {
         let states = vec![WorkingState::new()];
         return WorkingNFA { states };
     }
-    fn build_symbol(c: &Atom) -> WorkingNFA {
+    /// Makes an NFA matching a some symbol.
+    fn nfa_symbol(c: &Atom) -> WorkingNFA {
         let states = vec![
             WorkingState::new().with_transition(1, c.clone()),
             WorkingState::new(),
         ];
         return WorkingNFA { states };
     }
+    /// Makes a union of NFAs.
     fn nfa_union(nodes: &[WorkingNFA]) -> WorkingNFA {
         let states_count = 2 + nodes.iter().map(|n| n.states.len()).sum::<usize>();
         let mut states = vec![WorkingState::new()];
@@ -215,6 +220,7 @@ impl WorkingNFA {
         let sub_nfas: Vec<WorkingNFA> = nodes.iter().map(WorkingNFA::build).collect();
         return WorkingNFA::nfa_union(&sub_nfas);
     }
+    /// Wraps an NFA part in a capture group.
     fn nfa_capture(nfa: &WorkingNFA, group_num: usize) -> WorkingNFA {
         let states_count = 2 + nfa.states.len();
         let mut states: Vec<WorkingState> = std::iter::once(
@@ -235,6 +241,7 @@ impl WorkingNFA {
         let nfa = WorkingNFA::build(tree);
         return WorkingNFA::nfa_capture(&nfa, group_num);
     }
+    /// Makes an NFA that matches a concatenation of NFAs.
     fn nfa_concat<T: IntoIterator<Item = WorkingNFA>>(nodes: T) -> WorkingNFA {
         let mut states = vec![WorkingState::new().with_epsilon(1)];
 
@@ -259,6 +266,7 @@ impl WorkingNFA {
     fn build_concat<'a, T: IntoIterator<Item = &'a SimplifiedTreeNode>>(nodes: T) -> WorkingNFA {
         return WorkingNFA::nfa_concat(nodes.into_iter().map(WorkingNFA::build));
     }
+    /// Makes an NFA that matches some NFA concatenated with itself multiple times.
     fn nfa_repeat(nfa: &WorkingNFA, times: usize) -> WorkingNFA {
         return WorkingNFA::nfa_concat(std::iter::repeat(nfa).cloned().take(times));
     }
@@ -266,6 +274,7 @@ impl WorkingNFA {
         let nfa = WorkingNFA::build(tree);
         return WorkingNFA::nfa_repeat(&nfa, times);
     }
+    /// Makes an NFA that matches some NFA concatenated with itself up to some number of times.
     fn nfa_upto(nfa: &WorkingNFA, times: usize, longest: bool) -> WorkingNFA {
         let end_state_idx = 1 + (nfa.states.len() + 1) * times;
 
@@ -311,6 +320,7 @@ impl WorkingNFA {
         let nfa = WorkingNFA::build(tree);
         return WorkingNFA::nfa_upto(&nfa, times, longest);
     }
+    /// Makes an NFA that matches some NFA concatenated with itself any number of times.
     fn nfa_star(nfa: WorkingNFA, longest: bool) -> WorkingNFA {
         let end_state_idx = 1 + nfa.states.len();
         let mut start_state = WorkingState::new();
@@ -338,21 +348,24 @@ impl WorkingNFA {
         let nfa = WorkingNFA::build(tree);
         return WorkingNFA::nfa_star(nfa, longest);
     }
-    fn build_start() -> WorkingNFA {
+    /// Makes an NFA that matches zero length but only at the text start
+    fn nfa_start() -> WorkingNFA {
         let states = vec![
             WorkingState::new().with_epsilon_special(1, EpsilonType::StartAnchor),
             WorkingState::new(),
         ];
         return WorkingNFA { states };
     }
-    fn build_end() -> WorkingNFA {
+    /// Makes an NFA that matches zero length but only at the text end
+    fn nfa_end() -> WorkingNFA {
         let states = vec![
             WorkingState::new().with_epsilon_special(1, EpsilonType::EndAnchor),
             WorkingState::new(),
         ];
         return WorkingNFA { states };
     }
-    fn build_never() -> WorkingNFA {
+    /// Makes an NFA that never matches.
+    fn nfa_never() -> WorkingNFA {
         let states = vec![WorkingState::new(), WorkingState::new()];
         return WorkingNFA { states };
     }
@@ -361,8 +374,8 @@ impl WorkingNFA {
     /// Should be optimized using [`WorkingNFA::optimize_pass`]
     fn build(tree: &SimplifiedTreeNode) -> WorkingNFA {
         return match tree {
-            SimplifiedTreeNode::Empty => WorkingNFA::build_empty(),
-            SimplifiedTreeNode::Symbol(c) => WorkingNFA::build_symbol(c),
+            SimplifiedTreeNode::Empty => WorkingNFA::nfa_empty(),
+            SimplifiedTreeNode::Symbol(c) => WorkingNFA::nfa_symbol(c),
             SimplifiedTreeNode::Union(nodes) => WorkingNFA::build_union(nodes),
             SimplifiedTreeNode::Capture(tree, group_num) => {
                 WorkingNFA::build_capture(&tree, *group_num)
@@ -373,9 +386,9 @@ impl WorkingNFA {
                 WorkingNFA::build_upto(tree, *times, *longest)
             }
             SimplifiedTreeNode::Star(tree, longest) => WorkingNFA::build_star(tree, *longest),
-            SimplifiedTreeNode::Start => WorkingNFA::build_start(),
-            SimplifiedTreeNode::End => WorkingNFA::build_end(),
-            SimplifiedTreeNode::Never => WorkingNFA::build_never(),
+            SimplifiedTreeNode::Start => WorkingNFA::nfa_start(),
+            SimplifiedTreeNode::End => WorkingNFA::nfa_end(),
+            SimplifiedTreeNode::Never => WorkingNFA::nfa_never(),
         };
     }
     pub fn new(tree: &SimplifiedTreeNode) -> WorkingNFA {
@@ -387,12 +400,12 @@ impl WorkingNFA {
         // add loops at start and end in case we lack anchors
         nfa = WorkingNFA::nfa_concat([
             WorkingNFA::nfa_star(
-                WorkingNFA::build_symbol(&Atom::NonmatchingList(Vec::new())),
+                WorkingNFA::nfa_symbol(&Atom::NonmatchingList(Vec::new())),
                 false,
             ),
             nfa,
             WorkingNFA::nfa_star(
-                WorkingNFA::build_symbol(&Atom::NonmatchingList(Vec::new())),
+                WorkingNFA::nfa_symbol(&Atom::NonmatchingList(Vec::new())),
                 false,
             ),
         ]);

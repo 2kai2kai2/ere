@@ -1,4 +1,7 @@
-//! Implements a version of [`crate::working_nfa::WorkingNFA`] that can be serialized statically into a binary.
+//! Implements a version of [`WorkingNFA`] that can be serialized statically into a binary.
+//!
+//! This may not be the most efficient engine to use in most cases,
+//! but is typically the most interpretable.
 
 use std::fmt::Write as _;
 
@@ -8,7 +11,7 @@ use crate::{
 };
 use quote::quote;
 
-/// A statically serializable version of [`crate::parse_tree::Atom`]
+/// A statically serializable version of an [`Atom`]
 #[derive(Debug)]
 pub enum AtomStatic {
     /// Includes normal char and escaped chars
@@ -28,7 +31,7 @@ impl AtomStatic {
             AtomStatic::NonmatchingList(arr) => !arr.into_iter().any(|b| b.check(c)),
         };
     }
-    /// Serialize as [`Atom`], deserialize as [`StaticAtom`]
+    /// Serialize as [`Atom`], deserialize as [`AtomStatic`]
     pub(crate) fn serialize_as_token_stream(atom: &Atom) -> proc_macro2::TokenStream {
         return match atom {
             Atom::NormalChar(c) => quote! {

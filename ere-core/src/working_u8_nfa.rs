@@ -1,46 +1,18 @@
+//! Implements `u8`-based version of [`crate::working_nfa`].
+//!
+//! Primarily involves converting from a [`WorkingNFA`] to a [`U8NFA`],
+//! which is used as an additional intermediate step for engines that match `u8`s
+//! instead of the more complex `char`s.
+
 use crate::working_nfa::{EpsilonType, WorkingNFA};
 use crate::{parse_tree::Atom, working_nfa::EpsilonTransition};
 use std::ops::RangeInclusive;
 use std::{usize, vec};
 
-/// Sorts and combines ranges
+/// Decomposes a char range into a set of sequences of byte ranges in utf8.
+/// These sequences then can be used to construct an NFA or trie.
 ///
-/// ```
-/// assert_eq!(
-///     reduce_ranges(vec![4..=6, 2..=3, 5..=7, 9..=10]),
-///     vec![2..=7, 9..=10],
-/// );
-/// ```
-fn reduce_ranges<T: Ord + Clone + Copy>(
-    mut ranges: Vec<RangeInclusive<T>>,
-) -> Vec<RangeInclusive<T>>
-where
-    RangeInclusive<T>: ExactSizeIterator,
-{
-    ranges.sort_by_key(|range| *range.start());
-    let Some((first_range, terms)) = ranges.split_first_chunk::<1>() else {
-        return Vec::new();
-    };
-    let mut reduced_terms = Vec::new();
-
-    let mut current_start = first_range[0].start();
-    let mut current_end = first_range[0].end();
-    for term in terms {
-        if term.is_empty() {
-            continue;
-        } else if (*current_end..=term.end().clone()).len() <= 2 {
-            // the next term either starts immediately after or is overlapping
-            // so combine them.
-            current_end = std::cmp::max(current_end, term.end());
-        } else {
-            reduced_terms.push(current_start.clone()..=current_end.clone());
-            current_start = term.start();
-            current_end = term.end();
-        }
-    }
-    reduced_terms.push(current_start.clone()..=current_end.clone());
-    return reduced_terms;
-}
+/// WARNING: currently subdivision in multi-byte chars is not fully supported.
 fn char_range_to_u8_ranges(range: RangeInclusive<char>) -> Vec<Vec<RangeInclusive<u8>>> {
     let start_char = *range.start();
     let end_char = *range.end();
@@ -298,14 +270,17 @@ pub struct U8NFA {
     pub(crate) states: Vec<U8State>,
 }
 impl U8NFA {
+    /// Makes an NFA that matches with zero length.
     fn nfa_empty() -> U8NFA {
         let states = vec![U8State::new()];
         return U8NFA { states };
     }
+    /// Makes an NFA matching a byte range.
     fn nfa_byte(c: &U8Atom) -> U8NFA {
         let states = vec![U8State::new().with_transition(1, c.clone()), U8State::new()];
         return U8NFA { states };
     }
+    /// Makes an NFA matching a specific char.
     fn nfa_symbol_char(c: char) -> U8NFA {
         let mut bytes = [0u8; 4];
         c.encode_utf8(&mut bytes);
@@ -318,6 +293,7 @@ impl U8NFA {
             .collect();
         return U8NFA { states };
     }
+    /// Makes an NFA matching a some symbol.
     fn nfa_symbol(c: &Atom) -> U8NFA {
         let ranges = c.to_ranges();
         let mut states = vec![U8State::new()];
@@ -363,6 +339,7 @@ impl U8NFA {
 
         return U8NFA { states };
     }
+    /// Makes a union of NFAs.
     fn nfa_union(nodes: &[U8NFA]) -> U8NFA {
         let states_count = 2 + nodes.iter().map(|n| n.states.len()).sum::<usize>();
         let mut states = vec![U8State::new()];
@@ -387,6 +364,7 @@ impl U8NFA {
 
         return U8NFA { states };
     }
+    /// Wraps an NFA part in a capture group.
     fn nfa_capture(nfa: &U8NFA, group_num: usize) -> U8NFA {
         let states_count = 2 + nfa.states.len();
         let mut states: Vec<U8State> = std::iter::once(
@@ -403,6 +381,7 @@ impl U8NFA {
 
         return U8NFA { states };
     }
+    /// Makes an NFA that matches a concatenation of NFAs.
     fn nfa_concat<T: IntoIterator<Item = U8NFA>>(nodes: T) -> U8NFA {
         let mut states = vec![U8State::new().with_epsilon(1)];
 
@@ -424,9 +403,11 @@ impl U8NFA {
         states.push(U8State::new());
         return U8NFA { states };
     }
+    /// Makes an NFA that matches some NFA concatenated with itself multiple times.
     fn nfa_repeat(nfa: &U8NFA, times: usize) -> U8NFA {
         return U8NFA::nfa_concat(std::iter::repeat(nfa).cloned().take(times));
     }
+    /// Makes an NFA that matches some NFA concatenated with itself up to some number of times.
     fn nfa_upto(nfa: &U8NFA, times: usize, longest: bool) -> U8NFA {
         let end_state_idx = 1 + (nfa.states.len() + 1) * times;
 
@@ -468,6 +449,7 @@ impl U8NFA {
 
         return U8NFA { states };
     }
+    /// Makes an NFA that matches some NFA concatenated with itself any number of times.
     fn nfa_star(nfa: U8NFA, longest: bool) -> U8NFA {
         let end_state_idx = 1 + nfa.states.len();
         let mut start_state = U8State::new();
@@ -491,6 +473,7 @@ impl U8NFA {
             .push(EpsilonTransition::new(0));
         return U8NFA { states };
     }
+    /// Makes an NFA that matches zero length but only at the text start
     fn nfa_start() -> U8NFA {
         let states = vec![
             U8State::new().with_epsilon_special(1, EpsilonType::StartAnchor),
@@ -498,6 +481,7 @@ impl U8NFA {
         ];
         return U8NFA { states };
     }
+    /// Makes an NFA that matches zero length but only at the text end
     fn nfa_end() -> U8NFA {
         let states = vec![
             U8State::new().with_epsilon_special(1, EpsilonType::EndAnchor),
@@ -505,6 +489,7 @@ impl U8NFA {
         ];
         return U8NFA { states };
     }
+    /// Makes an NFA that never matches.
     fn nfa_never() -> U8NFA {
         let states = vec![U8State::new(), U8State::new()];
         return U8NFA { states };

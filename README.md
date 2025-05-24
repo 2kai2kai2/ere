@@ -6,7 +6,7 @@ It is intended as a simple but compiler-checked version of the [`regex`](https:/
 ```rust
 use ere::prelude::*;
 
-const PHONE_REGEX: Regex = compile_regex!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$");
+const PHONE_REGEX: Regex<2> = compile_regex!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$");
 fn test() {
     assert!(PHONE_REGEX.test("012-345-6789"));
     assert!(PHONE_REGEX.test("987-654-3210"));
@@ -20,8 +20,8 @@ fn test() {
     assert!(!PHONE_REGEX.test("1 555-555-5555"));
 }
 
-const COLOR_REGEX: Regex = compile_regex!(
-    r"^#?([[:xdigit:]]{2})([[:xdigit:]]{2})([[:xdigit:]]{2})([[:xdigit:]]{2})?$",
+const COLOR_REGEX: Regex<5> = compile_regex!(
+    r"^#?([[:xdigit:]]{2})([[:xdigit:]]{2})([[:xdigit:]]{2})([[:xdigit:]]{2})?$"
 );
 fn exec() {
     assert_eq!(
@@ -71,7 +71,7 @@ To minimize memory overhead and binary size, it is recommended to create a singl
 - [ ] Non-capturing groups: `(?:non-capturing)` while not POSIX ERE standard-compilant, this is a relatively commonly used feature (and can improve performance by not tracking matches). If added, this will be behind a feature flag.
 
 #### Performance Improvements
-- [ ] `u8`-based engines: performance improvements can be made for many regexes (such as those with only ascii) by using `u8`s instead of extracting variably one to four-byte `char`s from strings.
+- [x] `u8`-based engines: performance improvements can be made for many regexes (such as those with only ascii) by using `u8`s instead of extracting variably one to four-byte `char`s from strings.
 - [ ] Additional limited-feature engines. This is relatively open-ended, but major improvements can be made for regexes with certain properties.
 
 ## Alternatives

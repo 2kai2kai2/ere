@@ -1,3 +1,5 @@
+//! Implements a Pike VM-like regex engine for `u8`s.
+
 use std::collections::VecDeque;
 
 use quote::quote;
