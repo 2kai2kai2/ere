@@ -93,3 +93,119 @@ pub fn __compile_regex(stream: TokenStream) -> TokenStream {
         return quote! { ::ere_core::__construct_nfa_regex(#engine) }.into();
     };
 }
+
+pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let ere: parse_tree::ERE = syn::parse_macro_input!(attr);
+    let tree = simplified_tree::SimplifiedTreeNode::from(ere);
+    let nfa = working_nfa::WorkingNFA::new(&tree);
+
+    let capture_groups = nfa.num_capture_groups();
+    let optional_captures: Vec<bool> = (0..capture_groups)
+        .map(|group_num| nfa.capture_group_is_optional(group_num))
+        .collect();
+
+    let input_copy = input.clone();
+    let regex_struct: syn::DeriveInput = syn::parse_macro_input!(input_copy);
+    let syn::Data::Struct(data_struct) = regex_struct.data else {
+        return syn::parse::Error::new_spanned(
+            regex_struct,
+            "Attribute regexes currently only support structs.",
+        )
+        .to_compile_error()
+        .into();
+    };
+    let syn::Fields::Unnamed(fields) = data_struct.fields else {
+        return syn::parse::Error::new_spanned(
+            data_struct.fields,
+            "Attribute regexes currently require unnamed structs (tuple syntax).",
+        )
+        .to_compile_error()
+        .into();
+    };
+    if fields.unnamed.len() != optional_captures.len() {
+        return syn::parse::Error::new_spanned(
+            fields.unnamed,
+            format!(
+                "Expected struct to have {} unnamed fields, based on number of captures in regular expression.",
+                optional_captures.len()
+            ),
+        )
+        .to_compile_error()
+        .into();
+    }
+    // for field in &fields.unnamed {
+    //     if let syn::Type::Reference(ty) = &field.ty {
+    //         if matches!(*ty.elem, syn::parse_quote!(str)) {
+    //             continue;
+    //         }
+    //     }
+    // }
+
+    let mut out: proc_macro2::TokenStream = input.into();
+
+    // Currently use a conservative check: only use u8 engines when it will only match ascii strings
+    fn is_state_ascii(state: &working_nfa::WorkingState) -> bool {
+        return state
+            .transitions
+            .iter()
+            .flat_map(|t| t.symbol.to_ranges())
+            .all(|range| range.end().is_ascii());
+    }
+    let is_ascii = nfa.states.iter().all(is_state_ascii);
+
+    let struct_args: proc_macro2::TokenStream = optional_captures
+        .iter()
+        .enumerate()
+        .map(|(group_num, opt)| if *opt {
+            quote! { result[#group_num], }
+        } else {
+            quote! {
+                result[#group_num]
+                .expect(
+                    "If you are seeing this, there is probably an internal bug in the `ere-core` crate where a capture group was mistakenly marked as non-optional. Please report the bug."
+                ),
+            }
+        })
+        .collect();
+
+    // TODO: is it possible to avoid all this wrapping?
+    let struct_name = regex_struct.ident;
+    if is_ascii {
+        let nfa = working_u8_nfa::U8NFA::new(&nfa);
+        let engine = pike_vm_u8::serialize_pike_vm_token_stream(&nfa);
+        let implementation = quote! {
+            impl<'a> #struct_name<'a> {
+                const ENGINE: ::ere_core::pike_vm_u8::U8PikeVM::<#capture_groups> = #engine;
+                pub fn test(text: &str) -> bool {
+                    return Self::ENGINE.test(text);
+                }
+                pub fn exec(text: &'a str) -> ::core::option::Option<#struct_name<'a>> {
+                    let result: [::core::option::Option<&'a str>; #capture_groups] = Self::ENGINE.exec(text)?;
+                    return ::core::option::Option::<#struct_name<'a>>::Some(#struct_name(
+                        #struct_args
+                    ));
+                }
+            }
+        };
+        out.extend(implementation);
+    } else {
+        let engine = pike_vm::serialize_pike_vm_token_stream(&nfa);
+        let implementation = quote! {
+            impl<'a> #struct_name<'a> {
+                const ENGINE: ::ere_core::pike_vm::PikeVM::<#capture_groups> = #engine;
+                pub fn test(text: &str) -> bool {
+                    return Self::ENGINE.test(text);
+                }
+                pub fn exec(text: &'a str) -> ::core::option::Option<#struct_name<'a>> {
+                    let result: [::core::option::Option<&'a str>; #capture_groups] = Self::ENGINE.exec(text)?;
+                    return ::core::option::Option::<#struct_name<'a>>::Some(#struct_name(
+                        #struct_args
+                    ));
+                }
+            }
+        };
+        out.extend(implementation);
+    }
+
+    return out.into();
+}

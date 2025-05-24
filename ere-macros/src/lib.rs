@@ -25,3 +25,8 @@ extern crate proc_macro;
 pub fn compile_regex(stream: TokenStream) -> TokenStream {
     return ere_core::__compile_regex(stream);
 }
+
+#[proc_macro_attribute]
+pub fn regex(attr: TokenStream, input: TokenStream) -> TokenStream {
+    return ere_core::__compile_regex_attr(attr, input);
+}

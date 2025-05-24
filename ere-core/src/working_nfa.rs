@@ -743,6 +743,32 @@ impl WorkingNFA {
             + 1;
     }
 
+    /// Returns whether each there is any matching path where the capture group is unused
+    pub fn capture_group_is_optional(&self, group_num: usize) -> bool {
+        let mut reached_states = vec![false; self.states.len()];
+        reached_states[0] = true;
+        let mut stack = vec![0];
+        while let Some(idx) = stack.pop() {
+            for t in &self.states[idx].transitions {
+                if !reached_states[t.to] {
+                    reached_states[t.to] = true;
+                    stack.push(t.to);
+                }
+            }
+            for e in &self.states[idx].epsilons {
+                if !reached_states[e.to] && e.special != EpsilonType::StartCapture(group_num) {
+                    // the end capture should not be reachable without a preceding
+                    // start capture, so we only need to check the start.
+                    debug_assert_ne!(e.special, EpsilonType::EndCapture(group_num));
+                    reached_states[e.to] = true;
+                    stack.push(e.to);
+                }
+            }
+        }
+
+        return *reached_states.last().unwrap();
+    }
+
     /// Writes a LaTeX TikZ representation to visualize the graph.
     ///
     /// If `include_doc` is `true`, will include the headers.
