@@ -12,6 +12,7 @@ proc-macro2 = "1.0.95"
 quote = "1.0.38"
 syn = { version = "2.0.96", features = ["parsing"] }
 thiserror = "2.0.11"
+utf8-ranges = "1.0.5"
 
 [features]
 unstable-attr-regex = []

@@ -9,125 +9,6 @@ use crate::{parse_tree::Atom, working_nfa::EpsilonTransition};
 use std::ops::RangeInclusive;
 use std::{usize, vec};
 
-/// Decomposes a char range into a set of sequences of byte ranges in utf8.
-/// These sequences then can be used to construct an NFA or trie.
-///
-/// WARNING: currently subdivision in multi-byte chars is not fully supported.
-fn char_range_to_u8_ranges(range: RangeInclusive<char>) -> Vec<Vec<RangeInclusive<u8>>> {
-    let start_char = *range.start();
-    let end_char = *range.end();
-
-    let mut out = Vec::new();
-    if end_char < start_char {
-        return out; // if empty
-    }
-
-    // one-byte part
-    const ONE_BYTE_END: char = '\u{007F}';
-    if start_char <= ONE_BYTE_END {
-        let mut start_bytes = [0; 4];
-        start_char.encode_utf8(&mut start_bytes);
-
-        let end_char = std::cmp::min(end_char, ONE_BYTE_END);
-        let mut end_bytes = [0; 4];
-        end_char.encode_utf8(&mut end_bytes);
-
-        out.push(vec![start_bytes[0]..=end_bytes[0]]);
-    }
-
-    // two-byte part
-    const TWO_BYTE_START: char = '\u{0080}';
-    const TWO_BYTE_END: char = '\u{07FF}';
-    if start_char <= TWO_BYTE_END && end_char >= TWO_BYTE_START {
-        let start_char = std::cmp::max(start_char, TWO_BYTE_START);
-        let mut start_bytes = [0; 4];
-        start_char.encode_utf8(&mut start_bytes);
-
-        let end_char = std::cmp::min(end_char, TWO_BYTE_END);
-        let mut end_bytes = [0; 4];
-        end_char.encode_utf8(&mut end_bytes);
-
-        if start_bytes[0] == end_bytes[0] {
-            out.push(vec![0b110_00000..=0b110_11111, 0b10_000000..=0b10_111111]);
-        } else {
-            let start = if start_bytes[1] == 0b10_000000 {
-                start_bytes[0]
-            } else {
-                // add partial-second-byte range at start
-                out.push(vec![
-                    start_bytes[0]..=start_bytes[0],
-                    start_bytes[1]..=0b10_111111,
-                ]);
-                start_bytes[0] + 1
-            };
-            let end = if end_bytes[1] == 0b10_111111 {
-                end_bytes[0]
-            } else {
-                // add partial-second-byte range at end
-                out.push(vec![
-                    end_bytes[0]..=end_bytes[0],
-                    0b10_000000..=end_bytes[1],
-                ]);
-                end_bytes[0] - 1
-            };
-
-            if start <= end {
-                out.push(vec![start..=end, 0b10_000000..=0b10_111111]);
-            } else {
-                debug_assert_eq!(start, end + 1);
-                // this means we had something where we are split across just a single first-byte boundary
-                // e.g. [0b110_00000, 0b10_111111] to [0b110_00001, 0b10_000000]
-                // so we don't need full-second-byte middle ranges, only the two at the ends.
-            }
-        }
-    }
-
-    const THREE_BYTE_START: char = '\u{0800}';
-    const THREE_BYTE_END: char = '\u{FFFF}';
-    if start_char <= THREE_BYTE_END && end_char >= THREE_BYTE_START {
-        let start_char = std::cmp::max(start_char, THREE_BYTE_START);
-        let mut start_bytes = [0; 4];
-        start_char.encode_utf8(&mut start_bytes);
-
-        let end_char = std::cmp::min(end_char, THREE_BYTE_END);
-        let mut end_bytes = [0; 4];
-        end_char.encode_utf8(&mut end_bytes);
-
-        if start_char == THREE_BYTE_START && end_char == THREE_BYTE_END {
-            out.push(vec![
-                0b1110_0000..=0b1110_1111,
-                0b10_000000..=0b10_111111,
-                0b10_000000..=0b10_111111,
-            ]);
-        } else {
-            todo!("Multi-byte char conversion is not fully supported yet.")
-        }
-    }
-
-    const FOUR_BYTE_START: char = '\u{010000}';
-    if end_char >= FOUR_BYTE_START {
-        let start_char = std::cmp::max(start_char, FOUR_BYTE_START);
-        let mut start_bytes = [0; 4];
-        start_char.encode_utf8(&mut start_bytes);
-
-        let mut end_bytes = [0; 4];
-        end_char.encode_utf8(&mut end_bytes);
-
-        if start_char == FOUR_BYTE_START && end_char == char::MAX {
-            out.push(vec![
-                0b11110_000..=0b11110_111,
-                0b10_000000..=0b10_111111,
-                0b10_000000..=0b10_111111,
-                0b10_000000..=0b10_111111,
-            ]);
-        } else {
-            todo!("Multi-byte char conversion is not fully supported yet.")
-        }
-    }
-
-    return out;
-}
-
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct U8Atom(RangeInclusive<u8>);
 impl U8Atom {
@@ -299,26 +180,27 @@ impl U8NFA {
         let mut states = vec![U8State::new()];
 
         for range in ranges {
-            for byte_ranges in char_range_to_u8_ranges(range) {
+            for byte_ranges in utf8_ranges::Utf8Sequences::new(*range.start(), *range.end()) {
                 let mut state = 0usize;
-                for (i, byte_range) in byte_ranges.iter().enumerate() {
+                for (i, byte_range) in byte_ranges.into_iter().enumerate() {
+                    let byte_range = byte_range.start..=byte_range.end;
                     if let Some(next_state) = states[state]
                         .transitions
                         .iter()
-                        .find(|a| a.symbol.0 == *byte_range)
+                        .find(|a| a.symbol.0 == byte_range)
                     {
                         state = next_state.to;
                     } else if i + 1 == byte_ranges.len() {
                         states[state]
                             .transitions
-                            .push(U8Transition::new(usize::MAX, U8Atom(byte_range.clone())));
+                            .push(U8Transition::new(usize::MAX, U8Atom(byte_range)));
                         break; // sanity check: should be unnecessary
                     } else {
                         let new_state_idx = states.len();
                         states.push(U8State::new());
                         states[state]
                             .transitions
-                            .push(U8Transition::new(new_state_idx, U8Atom(byte_range.clone())));
+                            .push(U8Transition::new(new_state_idx, U8Atom(byte_range)));
                         state = new_state_idx;
                     }
                 }
