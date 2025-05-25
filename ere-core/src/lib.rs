@@ -65,6 +65,7 @@ pub const fn __construct_nfa_regex<const N: usize>(nfa: nfa_static::NFAStatic<N>
     return Regex(RegexEngines::NFA(nfa));
 }
 
+/// Tries to pick the best engine.
 pub fn __compile_regex(stream: TokenStream) -> TokenStream {
     let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
@@ -91,6 +92,25 @@ pub fn __compile_regex(stream: TokenStream) -> TokenStream {
         let engine = nfa_static::serialize_nfa_as_token_stream(&nfa);
         return quote! { ::ere_core::__construct_nfa_regex(#engine) }.into();
     };
+}
+
+/// Always uses the [`pike_vm::PikeVM`] engine and returns an tokenized instance of it
+/// instead of [`Regex`]
+pub fn __compile_regex_engine_pike_vm(stream: TokenStream) -> TokenStream {
+    let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
+    let tree = simplified_tree::SimplifiedTreeNode::from(ere);
+    let nfa = working_nfa::WorkingNFA::new(&tree);
+    return pike_vm::serialize_pike_vm_token_stream(&nfa).into();
+}
+
+/// Always uses the [`pike_vm_u8::U8PikeVM`] engine and returns an tokenized instance of it
+/// instead of [`Regex`]
+pub fn __compile_regex_engine_pike_vm_u8(stream: TokenStream) -> TokenStream {
+    let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
+    let tree = simplified_tree::SimplifiedTreeNode::from(ere);
+    let nfa = working_nfa::WorkingNFA::new(&tree);
+    let nfa = working_u8_nfa::U8NFA::new(&nfa);
+    return pike_vm_u8::serialize_pike_vm_token_stream(&nfa).into();
 }
 
 #[cfg(feature = "unstable-attr-regex")]

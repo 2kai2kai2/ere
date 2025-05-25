@@ -18,7 +18,6 @@ ere-core = { version = "0.2.1", path = "./ere-core" }
 ere-macros = { version = "0.2.1", path = "./ere-macros" }
 
 [features]
-default = ["unstable-attr-regex"]
 unstable-attr-regex = [
     "ere-core/unstable-attr-regex",
     "ere-macros/unstable-attr-regex",

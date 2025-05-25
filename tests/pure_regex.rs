@@ -1,155 +1,134 @@
+use std::hash::Hasher;
+
 use ere::prelude::*;
+use ere_macros::{compile_regex_pikevm, compile_regex_u8pikevm};
 
 #[test]
 fn phone_number() {
-    const PHONE_REGEX: Regex<2> = compile_regex!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$");
+    const REGEXES: [Regex<2>; 2] = [
+        ere_core::__construct_pikevm_regex(compile_regex_pikevm!(
+            r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"
+        )),
+        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(
+            r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"
+        )),
+    ];
 
-    assert!(PHONE_REGEX.test("012-345-6789"));
-    assert!(PHONE_REGEX.test("987-654-3210"));
-    assert!(PHONE_REGEX.test("+1 555-555-5555"));
-    assert!(PHONE_REGEX.test("123-555-9876"));
+    for regex in REGEXES {
+        assert!(regex.test("012-345-6789"));
+        assert!(regex.test("987-654-3210"));
+        assert!(regex.test("+1 555-555-5555"));
+        assert!(regex.test("123-555-9876"));
 
-    assert!(!PHONE_REGEX.test("abcd"));
-    assert!(!PHONE_REGEX.test("0123456789"));
-    assert!(!PHONE_REGEX.test("012--345-6789"));
-    assert!(!PHONE_REGEX.test("(555) 555-5555"));
-    assert!(!PHONE_REGEX.test("1 555-555-5555"));
-}
-
-#[cfg(feature = "unstable-attr-regex")]
-#[test]
-fn phone_number_struct() {
-    #[derive(PartialEq, Eq, Debug)]
-    #[regex(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$")]
-    struct PhoneMatcher<'a>(&'a str, Option<&'a str>);
-
-    assert!(PhoneMatcher::test("012-345-6789"));
-    assert!(PhoneMatcher::test("987-654-3210"));
-    assert!(PhoneMatcher::test("+1 555-555-5555"));
-    assert!(PhoneMatcher::test("123-555-9876"));
-
-    assert!(!PhoneMatcher::test("abcd"));
-    assert!(!PhoneMatcher::test("0123456789"));
-    assert!(!PhoneMatcher::test("012--345-6789"));
-    assert!(!PhoneMatcher::test("(555) 555-5555"));
-    assert!(!PhoneMatcher::test("1 555-555-5555"));
-
-    assert_eq!(
-        PhoneMatcher::exec("012-345-6789"),
-        Some(PhoneMatcher("012-345-6789", None))
-    );
-    assert_eq!(
-        PhoneMatcher::exec("987-654-3210"),
-        Some(PhoneMatcher("987-654-3210", None))
-    );
-    assert_eq!(
-        PhoneMatcher::exec("+1 555-555-5555"),
-        Some(PhoneMatcher("+1 555-555-5555", Some("+1 ")))
-    );
-    assert_eq!(
-        PhoneMatcher::exec("123-555-9876"),
-        Some(PhoneMatcher("123-555-9876", None))
-    );
-
-    assert_eq!(PhoneMatcher::exec("abcd"), None);
-    assert_eq!(PhoneMatcher::exec("0123456789"), None);
-    assert_eq!(PhoneMatcher::exec("012--345-6789"), None);
-    assert_eq!(PhoneMatcher::exec("(555) 555-5555"), None);
-    assert_eq!(PhoneMatcher::exec("1 555-555-5555"), None);
+        assert!(!regex.test("abcd"));
+        assert!(!regex.test("0123456789"));
+        assert!(!regex.test("012--345-6789"));
+        assert!(!regex.test("(555) 555-5555"));
+        assert!(!regex.test("1 555-555-5555"));
+    }
 }
 
 #[test]
 fn byte_value_exec() {
-    const BYTE_REGEX: Regex<2> =
-        compile_regex!(r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$");
+    const REGEXES: [Regex<2>; 2] = [
+        ere_core::__construct_pikevm_regex(compile_regex_pikevm!(
+            r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
+        )),
+        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(
+            r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
+        )),
+    ];
+    for regex in REGEXES {
+        for i in 0u8..=255u8 {
+            let text = i.to_string();
+            assert!(regex.test(&text));
+            assert_eq!(
+                regex.exec(&text),
+                Some([Some(text.as_str()), Some(text.as_str())])
+            );
+        }
 
-    assert_eq!(BYTE_REGEX.exec("1"), Some([Some("1"), Some("1")]),);
-    assert_eq!(BYTE_REGEX.exec("255"), Some([Some("255"), Some("255")]),);
-    assert_eq!(BYTE_REGEX.exec("0"), Some([Some("0"), Some("0")]),);
-    assert_eq!(BYTE_REGEX.exec("12"), Some([Some("12"), Some("12"),]),);
-
-    assert_eq!(BYTE_REGEX.exec("abcd"), None);
-    assert_eq!(BYTE_REGEX.exec("00"), None);
-    assert_eq!(BYTE_REGEX.exec("256"), None);
+        assert_eq!(regex.exec("abcd"), None);
+        assert_eq!(regex.exec("00"), None);
+        assert_eq!(regex.exec("256"), None);
+    }
 }
 
 #[test]
 fn ipv4_exec() {
-    const IPV4_REGEX: Regex<5> = compile_regex!(
-        r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
-    );
+    const REGEXES: [Regex<5>; 2] = [
+        ere_core::__construct_pikevm_regex(compile_regex_pikevm!(
+            r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
+        )),
+        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(
+            r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
+        )),
+    ];
 
-    assert_eq!(
-        IPV4_REGEX.exec("1.1.1.1"),
-        Some([Some("1.1.1.1"), Some("1"), Some("1"), Some("1"), Some("1")]),
-    );
-    assert_eq!(
-        IPV4_REGEX.exec("255.255.255.255"),
-        Some([
-            Some("255.255.255.255"),
-            Some("255"),
-            Some("255"),
-            Some("255"),
-            Some("255")
-        ]),
-    );
-    assert_eq!(
-        IPV4_REGEX.exec("192.168.0.1"),
-        Some([
-            Some("192.168.0.1"),
-            Some("192"),
-            Some("168"),
-            Some("0"),
-            Some("1")
-        ]),
-    );
-    assert_eq!(
-        IPV4_REGEX.exec("12.34.56.78"),
-        Some([
-            Some("12.34.56.78"),
-            Some("12"),
-            Some("34"),
-            Some("56"),
-            Some("78")
-        ]),
-    );
-
-    assert_eq!(IPV4_REGEX.exec("abcd"), None);
-    assert_eq!(IPV4_REGEX.exec("1.1.1"), None);
-    assert_eq!(IPV4_REGEX.exec("..."), None);
-    assert_eq!(IPV4_REGEX.exec("1::"), None);
-    assert_eq!(IPV4_REGEX.exec("256.0.0.0"), None);
+    for regex in REGEXES {
+        for i in 0..=10000 {
+            // testing deterministic pseudo-random numbers via hashing
+            let mut hasher = std::hash::DefaultHasher::new();
+            hasher.write_u32(i);
+            let i = hasher.finish();
+            let [_, _, a, b, c, d, _, _] = i.to_be_bytes();
+            let a = a.to_string();
+            let b = b.to_string();
+            let c = c.to_string();
+            let d = d.to_string();
+            let text = format!("{a}.{b}.{c}.{d}");
+            assert!(regex.test(&text));
+            assert_eq!(
+                regex.exec(&text),
+                Some([Some(text.as_str()), Some(&a), Some(&b), Some(&c), Some(&d)])
+            );
+        }
+        assert_eq!(regex.exec("abcd"), None);
+        assert_eq!(regex.exec("1.1.1"), None);
+        assert_eq!(regex.exec("..."), None);
+        assert_eq!(regex.exec("1::"), None);
+        assert_eq!(regex.exec("256.0.0.0"), None);
+    }
 }
 
 #[test]
 fn needle() {
-    const NEEDLE_REGEX: Regex = compile_regex!(r"nee+dle");
+    const REGEXES: [Regex; 2] = [
+        ere_core::__construct_pikevm_regex(compile_regex_pikevm!(r"nee+dle")),
+        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(r"nee+dle")),
+    ];
+    for regex in REGEXES {
+        assert!(regex.test("needle"));
+        assert!(regex.test("haystackhaysneedletackhaystack"));
+        assert!(regex.test("haystackneeeeeeeeedlehaystack"));
+        assert!(regex.test("needneedlele"));
 
-    assert!(NEEDLE_REGEX.test("needle"));
-    assert!(NEEDLE_REGEX.test("haystackhaysneedletackhaystack"));
-    assert!(NEEDLE_REGEX.test("haystackneeeeeeeeedlehaystack"));
-    assert!(NEEDLE_REGEX.test("needneedlele"));
-
-    assert!(!NEEDLE_REGEX.test("haystackhaystack"));
-    assert!(!NEEDLE_REGEX.test("0123456789"));
-    assert!(!NEEDLE_REGEX.test("nothinghere"));
-    assert!(!NEEDLE_REGEX.test("npuowahpeoifjap098uq09p3ior"));
-    assert!(!NEEDLE_REGEX.test("nedle"));
+        assert!(!regex.test("haystackhaystack"));
+        assert!(!regex.test("0123456789"));
+        assert!(!regex.test("nothinghere"));
+        assert!(!regex.test("npuowahpeoifjap098uq09p3ior"));
+        assert!(!regex.test("nedle"));
+    }
 }
 
 #[test]
 fn dot() {
-    const DOT_REGEX: Regex = compile_regex!("^.$");
+    const REGEXES: [Regex; 2] = [
+        ere_core::__construct_pikevm_regex(compile_regex_pikevm!("^.$")),
+        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!("^.$")),
+    ];
+    for regex in REGEXES {
+        for c in '\u{0001}'..=char::MAX {
+            let text = c.to_string();
+            assert!(regex.test(&text));
+            assert_eq!(regex.exec(&text), Some([Some(text.as_str())]));
+        }
 
-    assert!(DOT_REGEX.test("a"));
-    assert!(DOT_REGEX.test("b"));
-    assert!(DOT_REGEX.test("©"));
-    assert!(DOT_REGEX.test("\u{0001}"));
-
-    assert!(!DOT_REGEX.test("\0"));
-    assert!(!DOT_REGEX.test("12"));
-    assert!(!DOT_REGEX.test("å©"));
-    assert!(!DOT_REGEX.test(""));
+        assert!(!regex.test("\0"));
+        assert!(!regex.test("12"));
+        assert!(!regex.test("å©"));
+        assert!(!regex.test(""));
+    }
 }
 
 #[test]
