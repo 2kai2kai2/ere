@@ -10,7 +10,7 @@ use std::ops::RangeInclusive;
 use std::{usize, vec};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct U8Atom(RangeInclusive<u8>);
+pub struct U8Atom(pub RangeInclusive<u8>);
 impl U8Atom {
     #[inline]
     pub fn check(&self, c: u8) -> bool {

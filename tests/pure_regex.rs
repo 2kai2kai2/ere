@@ -1,15 +1,18 @@
 use std::hash::Hasher;
 
 use ere::prelude::*;
-use ere_macros::{compile_regex_pikevm, compile_regex_u8pikevm};
+use ere_macros::{compile_regex_pikevm, compile_regex_u8onepass, compile_regex_u8pikevm};
 
 #[test]
 fn phone_number() {
-    const REGEXES: [Regex<2>; 2] = [
+    const REGEXES: [Regex<2>; 3] = [
         ere_core::__construct_pikevm_regex(compile_regex_pikevm!(
             r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"
         )),
         ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(
+            r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"
+        )),
+        ere_core::__construct_u8onepass_regex(compile_regex_u8onepass!(
             r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"
         )),
     ];
@@ -37,6 +40,7 @@ fn byte_value_exec() {
         ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(
             r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
         )),
+        // one pass not working yet, needs further optimizations
     ];
     for regex in REGEXES {
         for i in 0u8..=255u8 {
@@ -63,6 +67,7 @@ fn ipv4_exec() {
         ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(
             r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
         )),
+        // one pass not working yet, needs further optimizations
     ];
 
     for regex in REGEXES {
@@ -96,6 +101,7 @@ fn needle() {
     const REGEXES: [Regex; 2] = [
         ere_core::__construct_pikevm_regex(compile_regex_pikevm!(r"nee+dle")),
         ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(r"nee+dle")),
+        // not one-pass because it is not start/end anchored
     ];
     for regex in REGEXES {
         assert!(regex.test("needle"));
@@ -113,9 +119,10 @@ fn needle() {
 
 #[test]
 fn dot() {
-    const REGEXES: [Regex; 2] = [
+    const REGEXES: [Regex; 3] = [
         ere_core::__construct_pikevm_regex(compile_regex_pikevm!("^.$")),
         ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!("^.$")),
+        ere_core::__construct_u8onepass_regex(compile_regex_u8onepass!("^.$")),
     ];
     for regex in REGEXES {
         for c in '\u{0001}'..=char::MAX {

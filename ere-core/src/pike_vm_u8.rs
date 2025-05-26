@@ -496,7 +496,7 @@ pub(crate) fn serialize_pike_vm_token_stream(nfa: &U8NFA) -> proc_macro2::TokenS
                 let new_threads = transition_epsilons_exec(&threads, i + 1, text.len());
                 threads = new_threads;
                 if threads.is_empty() {
-                    return None;
+                    return ::core::option::Option::None;
                 }
             }
 
@@ -515,7 +515,7 @@ pub(crate) fn serialize_pike_vm_token_stream(nfa: &U8NFA) -> proc_macro2::TokenS
                     assert_eq!(end, usize::MAX);
                 }
             }
-            return Some(captures);
+            return ::core::option::Option::Some(captures);
         }
 
         ::ere_core::pike_vm_u8::U8PikeVM::<#capture_groups>::__load(test, exec)

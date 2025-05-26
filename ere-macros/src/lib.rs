@@ -72,6 +72,36 @@ pub fn compile_regex_u8pikevm(stream: TokenStream) -> TokenStream {
     return ere_core::__compile_regex_engine_pike_vm_u8(stream);
 }
 
+/// Checks and compiles a regular expression into a [`ere_core::one_pass_u8::U8OnePass<N>`].
+/// Unless you specifically want this engine, you might want to use [`compile_regex!`] instead.
+///
+/// This compilation happens during build using proc macros,
+/// resulting in rust code equivalent to your regex.
+/// This code can then by further optimized by rustc when compiled directly into the binary.
+///
+/// The generic `const N: usize` will be the number of capture groups present in the regular expression
+/// (including capture group 0 which is the entire matched text).
+/// You will need to properly specify this in the generics for the regex (default if unspecified is 1).
+/// When using [`U8OnePass<N>::exec`](`ere_core::one_pass_u8::U8OnePass<N>::exec`), this is the length of the captures returned.
+///
+/// ```
+/// use ere_core::one_pass_u8::U8OnePass;
+/// use ere_macros::compile_regex_u8onepass;
+///
+/// const MY_REGEX: U8OnePass<2> = compile_regex_u8onepass!("^a(b?)c$");
+/// ```
+///
+/// ---
+///
+/// Note that this engine does not support all valid regular expressions,
+/// and will raise a compile error if necessary.
+/// For example, unanchored regexes are generally not one-pass.
+///
+#[proc_macro]
+pub fn compile_regex_u8onepass(stream: TokenStream) -> TokenStream {
+    return ere_core::__compile_regex_engine_one_pass_u8(stream);
+}
+
 /// EXPERIMENTAL: this attribute provides an alternate syntax with finer control for creating regexes.
 ///
 /// Compared with [`compile_regex!`], this allows the type system to know which capture groups

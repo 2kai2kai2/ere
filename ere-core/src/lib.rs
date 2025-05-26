@@ -6,6 +6,7 @@ extern crate proc_macro;
 
 pub mod config;
 pub mod nfa_static;
+pub mod one_pass_u8;
 pub mod parse_tree;
 pub mod pike_vm;
 pub mod pike_vm_u8;
@@ -18,6 +19,7 @@ enum RegexEngines<const N: usize> {
     NFA(nfa_static::NFAStatic<N>),
     PikeVM(pike_vm::PikeVM<N>),
     U8PikeVM(pike_vm_u8::U8PikeVM<N>),
+    U8OnePass(one_pass_u8::U8OnePass<N>),
 }
 
 /// A regular expression (specifically, a [POSIX ERE](https://en.wikibooks.org/wiki/Regular_Expressions/POSIX-Extended_Regular_Expressions)).
@@ -34,6 +36,7 @@ impl<const N: usize> Regex<N> {
             RegexEngines::NFA(nfa) => nfa.test(text),
             RegexEngines::PikeVM(pike_vm) => pike_vm.test(text),
             RegexEngines::U8PikeVM(pike_vm) => pike_vm.test(text),
+            RegexEngines::U8OnePass(one_pass) => one_pass.test(text),
         };
     }
 
@@ -42,6 +45,7 @@ impl<const N: usize> Regex<N> {
             RegexEngines::NFA(nfa) => unimplemented!(),
             RegexEngines::PikeVM(pike_vm) => pike_vm.exec(text),
             RegexEngines::U8PikeVM(pike_vm) => pike_vm.exec(text),
+            RegexEngines::U8OnePass(one_pass) => one_pass.exec(text),
         };
     }
 }
@@ -51,6 +55,7 @@ impl<const N: usize> std::fmt::Display for Regex<N> {
             RegexEngines::NFA(nfastatic) => nfastatic.fmt(f),
             RegexEngines::PikeVM(_) => f.write_str("<Compiled VM>"),
             RegexEngines::U8PikeVM(_) => f.write_str("<Compiled VM>"),
+            RegexEngines::U8OnePass(_) => f.write_str("<Compiled VM>"),
         };
     }
 }
@@ -63,6 +68,11 @@ pub const fn __construct_u8pikevm_regex<const N: usize>(vm: pike_vm_u8::U8PikeVM
 }
 pub const fn __construct_nfa_regex<const N: usize>(nfa: nfa_static::NFAStatic<N>) -> Regex<N> {
     return Regex(RegexEngines::NFA(nfa));
+}
+pub const fn __construct_u8onepass_regex<const N: usize>(
+    nfa: one_pass_u8::U8OnePass<N>,
+) -> Regex<N> {
+    return Regex(RegexEngines::U8OnePass(nfa));
 }
 
 /// Tries to pick the best engine.
@@ -81,9 +91,14 @@ pub fn __compile_regex(stream: TokenStream) -> TokenStream {
     }
     let is_ascii = nfa.states.iter().all(is_state_ascii);
 
+    let u8_nfa = working_u8_nfa::U8NFA::new(&nfa);
+
+    if let Some(engine) = one_pass_u8::serialize_one_pass_token_stream(&u8_nfa) {
+        return quote! { ::ere_core::__construct_u8onepass_regex(#engine) }.into();
+    }
+
     if is_ascii {
-        let nfa = working_u8_nfa::U8NFA::new(&nfa);
-        let engine = pike_vm_u8::serialize_pike_vm_token_stream(&nfa);
+        let engine = pike_vm_u8::serialize_pike_vm_token_stream(&u8_nfa);
         return quote! { ::ere_core::__construct_u8pikevm_regex(#engine) }.into();
     } else if true {
         let engine = pike_vm::serialize_pike_vm_token_stream(&nfa);
@@ -111,6 +126,27 @@ pub fn __compile_regex_engine_pike_vm_u8(stream: TokenStream) -> TokenStream {
     let nfa = working_nfa::WorkingNFA::new(&tree);
     let nfa = working_u8_nfa::U8NFA::new(&nfa);
     return pike_vm_u8::serialize_pike_vm_token_stream(&nfa).into();
+}
+
+/// Always uses the [`one_pass_u8::U8OnePass`] engine and returns an tokenized instance of it
+/// instead of [`Regex`].
+///
+/// Will return a compiler error if regex was not one-pass and could not be optimized to become one-pass.
+pub fn __compile_regex_engine_one_pass_u8(stream: TokenStream) -> TokenStream {
+    let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
+    let tree = simplified_tree::SimplifiedTreeNode::from(ere);
+    let nfa = working_nfa::WorkingNFA::new(&tree);
+    let nfa = working_u8_nfa::U8NFA::new(&nfa);
+    return one_pass_u8::serialize_one_pass_token_stream(&nfa)
+        .unwrap_or(
+            syn::parse::Error::new(
+                proc_macro2::Span::call_site(),
+                "Regex was not one-pass and could not be optimized to become one pass. 
+Try using a different engine.",
+            )
+            .to_compile_error(),
+        )
+        .into();
 }
 
 #[cfg(feature = "unstable-attr-regex")]
