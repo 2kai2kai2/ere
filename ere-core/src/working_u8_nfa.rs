@@ -57,7 +57,7 @@ impl TryFrom<char> for U8Atom {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct U8Transition {
     pub(crate) to: usize,
     pub(crate) symbol: U8Atom,
@@ -475,6 +475,59 @@ impl U8NFA {
         }
     }
 
+    /// De-duplicates identical transitions
+    /// (`a -e> b`, `a -e> b`) -> (`a -e> b`)
+    ///
+    /// Returns `true` if changes were made.
+    /// The highest-priority transition will be kept.
+    ///
+    /// ---
+    ///
+    /// Typically these are caused by optimizations that merge paths.
+    fn dedupe_transitions(&mut self) -> bool {
+        let mut changed = false;
+
+        for state in &mut self.states {
+            // state transitions
+            let keep: Vec<bool> = state
+                .transitions
+                .iter()
+                .enumerate()
+                .map(|(i, e)| state.transitions[..=i].contains(e))
+                .collect();
+            let prev_len = state.transitions.len();
+            let mut i = 0;
+            state.transitions.retain(|_| {
+                let idx = i;
+                i += 1;
+                return keep[idx];
+            });
+            if state.transitions.len() != prev_len {
+                changed = true;
+            }
+
+            // epsilon transitions
+            let keep: Vec<bool> = state
+                .epsilons
+                .iter()
+                .enumerate()
+                .map(|(i, e)| !state.epsilons[..i].contains(e))
+                .collect();
+            let prev_len = state.epsilons.len();
+            let mut i = 0;
+            state.epsilons.retain(|_| {
+                let idx = i;
+                i += 1;
+                return keep[idx];
+            });
+            if state.epsilons.len() != prev_len {
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
     /// Optimizes the NFA graph.
     ///
     /// Returns `true` if changes were made (meaning another pass should be tried).
@@ -486,7 +539,44 @@ impl U8NFA {
 
         // Skip redundant states
         // Special transitions (anchors + capture groups) are treated similar to non-epsilon transitions
-        for state_idx in 1..state_count - 1 {
+        'state_loop: for state_idx in 1..state_count - 1 {
+            // merge states with same outgoing
+            for other_idx in 0..state_count - 1 {
+                if self.states[state_idx].epsilons == self.states[other_idx].epsilons
+                    && self.states[state_idx].transitions == self.states[other_idx].transitions
+                    && state_idx != other_idx
+                    && (!self.states[state_idx].epsilons.is_empty()
+                        || !self.states[state_idx].transitions.is_empty())
+                {
+                    // TODO: if the two states have self-loops, they currently are not counted
+                    // as equivalent even if they should be.
+
+                    // I think symbol transition order matters here because it may have been created by previous
+                    // optimizations, which originated from epsilon transitions where it was important.
+                    dead_states[state_idx] = true;
+                    changed = true;
+                    self.states[state_idx].epsilons = Vec::new();
+                    self.states[state_idx].transitions = Vec::new();
+                    // divert other states to other
+                    for s in &mut self.states {
+                        for ep in &mut s.epsilons {
+                            if ep.to == state_idx {
+                                ep.to = other_idx;
+                            }
+                        }
+                        for tr in &mut s.transitions {
+                            if tr.to == state_idx {
+                                tr.to = other_idx;
+                            }
+                        }
+                    }
+                    continue 'state_loop;
+                }
+            }
+
+            // dedupe transitions
+            changed |= self.dedupe_transitions();
+
             let incoming: Vec<(usize, usize)> = self
                 .states
                 .iter()
@@ -667,13 +757,13 @@ impl U8NFA {
                         label: crate::visualization::escape_latex(t.symbol.to_string()),
                         to: t.to,
                     });
-            let epsilons = state.epsilons.iter().map(|e| {
+            let epsilons = state.epsilons.iter().enumerate().map(|(i, e)| {
                 let label = match e.special {
-                    EpsilonType::None => r"$\epsilon$".to_string(),
-                    EpsilonType::StartAnchor => r"{\textasciicircum}".to_string(),
-                    EpsilonType::EndAnchor => r"\$".to_string(),
-                    EpsilonType::StartCapture(group) => format!("{group}("),
-                    EpsilonType::EndCapture(group) => format!("){group}"),
+                    EpsilonType::None => format!(r"$\epsilon_{{{i}}}$"),
+                    EpsilonType::StartAnchor => format!(r"{{\textasciicircum}}$_{{{i}}}$"),
+                    EpsilonType::EndAnchor => format!(r"$\$_{{{i}}}$"),
+                    EpsilonType::StartCapture(group) => format!("${group}(_{{{i}}}$"),
+                    EpsilonType::EndCapture(group) => format!("$){group}_{{{i}}}$"),
                 };
                 return crate::visualization::LatexGraphTransition { label, to: e.to };
             });

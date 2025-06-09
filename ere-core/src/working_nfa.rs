@@ -900,7 +900,7 @@ impl WorkingNFA {
                 let epsilons = state.epsilons.iter().enumerate().map(|(i, e)| {
                     let label = match e.special {
                         EpsilonType::None => format!(r"$\epsilon_{{{i}}}$"),
-                        EpsilonType::StartAnchor => format!(r"${{\textasciicircum}}_{{{i}}}$"),
+                        EpsilonType::StartAnchor => format!(r"{{\textasciicircum}}$_{{{i}}}$"),
                         EpsilonType::EndAnchor => format!(r"$\$_{{{i}}}$"),
                         EpsilonType::StartCapture(group) => format!("${group}(_{{{i}}}$"),
                         EpsilonType::EndCapture(group) => format!("$){group}_{{{i}}}$"),
