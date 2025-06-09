@@ -63,16 +63,7 @@ fn exec() {
 
 To minimize memory overhead and binary size, it is recommended to create a single instance of each regular expression (using a `const` variable) rather than creating multiple.
 
-## Roadmap
-
-#### Features
-- [ ] POSIX-compilant ambiguous submatching rules: we currently implement the Perl-like greedy submatching when submatches are ambiguous (this should only affect `exec`, not `test`, and only more complex regexes). While known implementations are more expensive, I plan on also supporting the POSIX rules.
-- [ ] Case-insensitive mode: while regexes can be modified to support case-insensitivity (and this can also be done on ascii by just lower-casing the text first), I intend to implement case-insensitive mode.
-- [ ] Non-capturing groups: `(?:non-capturing)` while not POSIX ERE standard-compilant, this is a relatively commonly used feature (and can improve performance by not tracking matches). If added, this will be behind a feature flag.
-
-#### Performance Improvements
-- [x] `u8`-based engines: performance improvements can be made for many regexes (such as those with only ascii) by using `u8`s instead of extracting variably one to four-byte `char`s from strings.
-- [ ] Additional limited-feature engines. This is relatively open-ended, but major improvements can be made for regexes with certain properties.
+Some features are not fully implemented, such as POSIX-mode ambiguous submatch rules (we currently use greedy mode, which is the much more common and efficient method). See the [roadmap](ROADMAP.md) for more details.
 
 ## Alternatives
 
