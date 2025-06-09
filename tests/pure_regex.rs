@@ -156,7 +156,7 @@ fn greedy() {
     assert_eq!(REGEX4.exec("aaaaaaaa"), Some([Some("aaaaaaaa")]));
     assert_eq!(REGEX4.exec("aabaaaaaa"), Some([Some("aa")]));
 
-    // non-greedy
+    // with shortest
     const REGEX5: Regex<1> = compile_regex!(r"a*?");
     assert_eq!(REGEX5.exec("aaaaaaaa"), Some([Some("")]));
 
@@ -168,4 +168,7 @@ fn greedy() {
     // and does not wait to find the `b`. This is consistent with other engines.
     const REGEX7: Regex<1> = compile_regex!(r"ba*?b|a*");
     assert_eq!(REGEX7.exec("abaaabaaaa"), Some([Some("a")]));
+
+    const REGEX8: Regex<1> = compile_regex!(r"a??");
+    assert_eq!(REGEX8.exec("abaaabaaaa"), Some([Some("")]));
 }

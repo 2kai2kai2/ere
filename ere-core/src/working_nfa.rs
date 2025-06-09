@@ -113,6 +113,17 @@ impl std::fmt::Display for WorkingTransition {
     }
 }
 
+/// The symbol transitions are assumed to have priority before epsilon transitions,
+/// meaning that of all the propogated next symbol transitions available,
+/// those going out from the previous transition's destination will come first.
+///
+/// So, if the symbol transitions should have a lower priority than those found
+/// via an epsilon transition, they should be in a new state with a lower priority
+/// epsilon transition to it.
+/// Due to the way we construct NFAs, this should initially be the case--
+/// No state has both incoming and outgoing symbol transitions
+/// (they are always separated by at least one epsilon transition) and priority is maintained.
+/// We then can optimize where there are no competing transitions.
 #[derive(Debug, Clone)]
 pub struct WorkingState {
     pub(crate) transitions: Vec<WorkingTransition>,
@@ -278,9 +289,16 @@ impl WorkingNFA {
     fn nfa_upto(nfa: &WorkingNFA, times: usize, longest: bool) -> WorkingNFA {
         let end_state_idx = 1 + (nfa.states.len() + 1) * times;
 
-        let mut states = vec![WorkingState::new()
-            .with_epsilon(1)
-            .with_epsilon(end_state_idx - 1)];
+        let state0 = if longest {
+            WorkingState::new()
+                .with_epsilon(1)
+                .with_epsilon(end_state_idx - 1)
+        } else {
+            WorkingState::new()
+                .with_epsilon(end_state_idx - 1)
+                .with_epsilon(1)
+        };
+        let mut states = vec![state0];
         for i in 0..times {
             let states_count = states.len();
             states.extend(
@@ -784,13 +802,13 @@ impl WorkingNFA {
                             label: crate::visualization::escape_latex(t.symbol.to_string()),
                             to: t.to,
                         });
-                let epsilons = state.epsilons.iter().map(|e| {
+                let epsilons = state.epsilons.iter().enumerate().map(|(i, e)| {
                     let label = match e.special {
-                        EpsilonType::None => r"$\epsilon$".to_string(),
-                        EpsilonType::StartAnchor => r"{\textasciicircum}".to_string(),
-                        EpsilonType::EndAnchor => r"\$".to_string(),
-                        EpsilonType::StartCapture(group) => format!("{group}("),
-                        EpsilonType::EndCapture(group) => format!("){group}"),
+                        EpsilonType::None => format!(r"$\epsilon_{{{i}}}$"),
+                        EpsilonType::StartAnchor => format!(r"${{\textasciicircum}}_{{{i}}}$"),
+                        EpsilonType::EndAnchor => format!(r"$\$_{{{i}}}$"),
+                        EpsilonType::StartCapture(group) => format!("${group}(_{{{i}}}$"),
+                        EpsilonType::EndCapture(group) => format!("$){group}_{{{i}}}$"),
                     };
                     return crate::visualization::LatexGraphTransition { label, to: e.to };
                 });
@@ -1007,14 +1025,5 @@ mod tests {
         assert!(!nfa.test(".2"));
         assert!(!nfa.test("09"));
         assert!(!nfa.test("d"));
-    }
-
-    #[test]
-    fn asdf() {
-        let ere = ERE::parse_str(r"ba*?b|a*").unwrap();
-        let (tree, capture_groups) = SimplifiedTreeNode::from_ere(&ere, &Config::default());
-        assert_eq!(capture_groups, 1);
-        let nfa = WorkingNFA::new(&tree);
-        println!("{}", nfa.to_tikz(true));
     }
 }
