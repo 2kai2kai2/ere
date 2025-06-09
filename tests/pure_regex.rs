@@ -139,6 +139,32 @@ fn dot() {
 }
 
 #[test]
+fn duplicate_paths() {
+    const REGEXES: [Regex<3>; 3] = [
+        ere_core::__construct_pikevm_regex(compile_regex_pikevm!("^(ab|bc|ab|bc)(xy|yz|yz|xy)$")),
+        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(
+            "^(ab|bc|ab|bc)(xy|yz|yz|xy)$"
+        )),
+        // one-pass because it can be simplified to one-pass
+        // since its branching paths are actually the same and get merged
+        ere_core::__construct_u8onepass_regex(compile_regex_u8onepass!(
+            "^(ab|bc|ab|bc)(xy|yz|yz|xy)$"
+        )),
+    ];
+    for regex in &REGEXES {
+        assert!(regex.test("abxy"));
+        assert!(regex.test("abyz"));
+        assert!(regex.test("bcxy"));
+        assert!(regex.test("bcyz"));
+
+        assert!(!regex.test("acxy"));
+        assert!(!regex.test("abxz"));
+        assert!(!regex.test("bc"));
+        assert!(!regex.test("yz"));
+    }
+}
+
+#[test]
 fn greedy() {
     const REGEX1: Regex<2> = compile_regex!(r"^(a|ab)b?cd$");
     assert_eq!(REGEX1.exec("abcd"), Some([Some("abcd"), Some("a")]));

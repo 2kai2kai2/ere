@@ -35,7 +35,7 @@ impl ToTokens for EpsilonType {
 }
 
 /// An epsilon transition for the [`WorkingNFA`]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EpsilonTransition {
     pub(crate) to: usize,
     pub(crate) special: EpsilonType,
@@ -84,7 +84,7 @@ impl ToTokens for EpsilonTransition {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkingTransition {
     pub(crate) to: usize,
     pub(crate) symbol: Atom,
@@ -440,8 +440,12 @@ impl WorkingNFA {
             }
         }
 
+        // nfa.remove_unreachable();
         // Finally, do normal optimization passes
-        while nfa.optimize_pass() {}
+        // println!("{}", nfa.to_tikz(true));
+        while nfa.optimize_pass() {
+            // println!("{}", nfa.to_tikz(true));
+        }
         nfa.remove_unreachable();
         return nfa;
     }
@@ -583,18 +587,110 @@ impl WorkingNFA {
         }
     }
 
-    /// Optimizes the NFA graph.
+    /// De-duplicates identical transitions
+    /// (`a -e> b`, `a -e> b`) -> (`a -e> b`)
+    ///
+    /// Returns `true` if changes were made.
+    /// The highest-priority transition will be kept.
+    ///
+    /// ---
+    ///
+    /// Typically these are caused by optimizations that merge paths.
+    fn dedupe_transitions(&mut self) -> bool {
+        let mut changed = false;
+
+        for state in &mut self.states {
+            // state transitions
+            let keep: Vec<bool> = state
+                .transitions
+                .iter()
+                .enumerate()
+                .map(|(i, e)| state.transitions[..=i].contains(e))
+                .collect();
+            let prev_len = state.transitions.len();
+            let mut i = 0;
+            state.transitions.retain(|_| {
+                let idx = i;
+                i += 1;
+                return keep[idx];
+            });
+            if state.transitions.len() != prev_len {
+                changed = true;
+            }
+
+            // epsilon transitions
+            let keep: Vec<bool> = state
+                .epsilons
+                .iter()
+                .enumerate()
+                .map(|(i, e)| !state.epsilons[..i].contains(e))
+                .collect();
+            let prev_len = state.epsilons.len();
+            let mut i = 0;
+            state.epsilons.retain(|_| {
+                let idx = i;
+                i += 1;
+                return keep[idx];
+            });
+            if state.epsilons.len() != prev_len {
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
+    /// Various operations to optimize the NFA graph.
     ///
     /// Returns `true` if changes were made (meaning another pass should be tried).
     fn optimize_pass(&mut self) -> bool {
         let mut changed = false;
         let state_count = self.states.len();
+        debug_assert!(state_count >= 2);
 
         let mut dead_states = vec![false; self.states.len()];
 
         // Skip redundant states
         // Special transitions (anchors + capture groups) are treated similar to non-epsilon transitions
-        for state_idx in 1..state_count - 1 {
+        'state_loop: for state_idx in 1..state_count - 1 {
+            // merge states with same outgoing
+            for other_idx in 0..state_count - 1 {
+                if self.states[state_idx].epsilons == self.states[other_idx].epsilons
+                    && self.states[state_idx].transitions == self.states[other_idx].transitions
+                    && state_idx != other_idx
+                    && (!self.states[state_idx].epsilons.is_empty()
+                        || !self.states[state_idx].transitions.is_empty())
+                {
+                    // TODO: if the two states have self-loops, they currently are not counted
+                    // as equivalent even if they should be.
+
+                    // I think symbol transition order matters here because it may have been created by previous
+                    // optimizations, which originated from epsilon transitions where it was important.
+                    dead_states[state_idx] = true;
+                    changed = true;
+                    self.states[state_idx].epsilons = Vec::new();
+                    self.states[state_idx].transitions = Vec::new();
+                    // divert other states to other
+                    for s in &mut self.states {
+                        for ep in &mut s.epsilons {
+                            if ep.to == state_idx {
+                                ep.to = other_idx;
+                            }
+                        }
+                        for tr in &mut s.transitions {
+                            if tr.to == state_idx {
+                                tr.to = other_idx;
+                            }
+                        }
+                    }
+                    continue 'state_loop;
+                }
+            }
+
+            // dedupe transitions
+            changed |= self.dedupe_transitions();
+
+            // skip redundant
             let incoming: Vec<(usize, usize)> = self
                 .states
                 .iter()
@@ -663,13 +759,12 @@ impl WorkingNFA {
             // ??? `a -x> b -es> cs` can become `a -xs> cs`
             // ??? `as -es> b -x> c` can become `as -xs> c`
         }
-        if !changed {
-            return changed;
+
+        if changed {
+            self.remove_dead_states(dead_states);
+            return true;
         }
-
-        self.remove_dead_states(dead_states);
-
-        return changed;
+        return false;
     }
 
     /// Finds the states that can be reached from the start via any path
