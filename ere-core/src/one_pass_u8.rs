@@ -136,6 +136,32 @@ pub(crate) fn serialize_one_pass_token_stream(nfa: &U8NFA) -> Option<TokenStream
     }
 
     // == codegen ==
+    if let Some(_) = nfa.topological_ordering() {
+        // There are no loops in this NFA so we can avoid excessively deep recursion.
+        // Production compiler optimization (i.e. except opt level 0) should minimize all other
+        // internal function calls
+        return Some(codegen_functional(
+            nfa,
+            num_captures,
+            symbol_transitions,
+            accept_transitions,
+        ));
+    } else {
+        return Some(codegen_vmlike(
+            nfa,
+            num_captures,
+            symbol_transitions,
+            accept_transitions,
+        ));
+    }
+}
+
+fn codegen_vmlike(
+    nfa: &U8NFA,
+    num_captures: usize,
+    symbol_transitions: Vec<Vec<(std::ops::RangeInclusive<u8>, ThreadUpdates)>>,
+    accept_transitions: Vec<Vec<ThreadUpdates>>,
+) -> TokenStream {
     let U8NFA { states, .. } = nfa;
     let excluded_states = compute_excluded_states(nfa);
     let enum_states: proc_macro2::TokenStream = std::iter::IntoIterator::into_iter(0..states.len())
@@ -328,6 +354,217 @@ pub(crate) fn serialize_one_pass_token_stream(nfa: &U8NFA) -> Option<TokenStream
                 }
             }
             return Some(capture_strs);
+        }
+
+        ::ere_core::one_pass_u8::__load_u8onepass(test, exec)
+    }}.into();
+}
+
+fn codegen_functional(
+    nfa: &U8NFA,
+    num_captures: usize,
+    symbol_transitions: Vec<Vec<(std::ops::RangeInclusive<u8>, ThreadUpdates)>>,
+    accept_transitions: Vec<Vec<ThreadUpdates>>,
+) -> TokenStream {
+    let U8NFA { states, .. } = nfa;
+    let excluded_states = compute_excluded_states(nfa);
+
+    let fn_idents: Vec<_> = (0..states.len())
+        .map(|i| {
+            proc_macro2::Ident::new(&format!("func_state_{i}"), proc_macro2::Span::call_site())
+        })
+        .collect();
+
+    let make_test_func = |i: usize| {
+        let fn_ident = &fn_idents[i];
+
+        let accept_transitions = &accept_transitions[i];
+        let end_case = if accept_transitions.is_empty() {
+            // state is not accepting
+            quote! { false }
+        } else if accept_transitions.iter().any(|tu| !tu.start_only) {
+            // state is accepting, doesn't care if we're at the start.
+            quote! { true }
+        } else if i == 0 {
+            // rare case: needs to be at the start + end to accept
+            quote! { start }
+        } else {
+            // rare case: if we are not at state 0, we cannot be at the start.
+            quote! { false }
+        };
+
+        let symbol_transitions = &symbol_transitions[i];
+        let cases: TokenStream = symbol_transitions
+            .into_iter()
+            .map(|(range, tu)| {
+                let start = *range.start();
+                let end = *range.end();
+                let conditions = if tu.end_only || (tu.start_only && i != 0) {
+                    // end_only should already be optimized out, but we are not at the end so this transition should never happen.
+                    // since we always start at state 0, start_only is only satisfied when `i == 0`
+                    quote! { if false }
+                } else if tu.start_only && i == 0 {
+                    // if we ever come back to state 0, we may actually need to check start
+                    quote! { if start }
+                } else {
+                    TokenStream::new()
+                };
+
+                let new_state_fn_ident = &fn_idents[tu.state];
+
+                return quote! {
+                    ::core::option::Option::Some(#start..=#end) #conditions => #new_state_fn_ident(bytes, false),
+                };
+            })
+            .collect();
+
+        return quote! {
+            fn #fn_ident<'a>(mut bytes: ::core::str::Bytes<'a>, start: bool) -> bool {
+                return match bytes.next() {
+                    ::core::option::Option::None => #end_case,
+                    #cases
+                    ::core::option::Option::Some(_) => false,
+                }
+            }
+        };
+    };
+    let test_funcs: TokenStream = (0..states.len())
+        .filter(|i| !excluded_states[*i])
+        .map(make_test_func)
+        .collect();
+
+    /// Should have text position `i` and `mut captures` in local context
+    fn make_capture_statements(tu: &ThreadUpdates) -> TokenStream {
+        fn map_capture((capture_group, (start, end)): (usize, &(bool, bool))) -> TokenStream {
+            let mut out = TokenStream::new();
+            if *start {
+                out.extend(quote! {
+                    captures[#capture_group].0 = byte_idx;
+                });
+            }
+            if *end {
+                out.extend(quote! {
+                    captures[#capture_group].1 = byte_idx;
+                });
+            }
+            return out;
+        }
+        return tu
+            .update_captures
+            .iter()
+            .enumerate()
+            .map(map_capture)
+            .collect();
+    }
+
+    let make_exec_func = |i: usize| {
+        let fn_ident = &fn_idents[i];
+
+        let accept_transitions = &accept_transitions[i];
+
+        // for end_case, `end` check is implicit
+        let end_case = match &accept_transitions.as_slice() {
+            &[] => quote! { ::core::option::Option::None },
+            &[tu] if tu.start_only && i == 0 => {
+                // Accept if `start`
+                let capture_statements = make_capture_statements(tu);
+                quote! {
+                    #capture_statements
+                    if start {
+                        ::core::option::Option::Some(captures)
+                    } else {
+                        ::core::option::Option::None
+                    }
+                }
+            }
+            &[tu] if tu.start_only && i != 0 => quote! { ::core::option::Option::None },
+            &[tu] => {
+                // is always accepting
+                let capture_statements = make_capture_statements(tu);
+                quote! {
+                    #capture_statements
+                    ::core::option::Option::Some(captures)
+                }
+            }
+            _more => quote! {
+                compiler_error!("Should only be one thread update on accept for one-pass");
+            },
+        };
+
+        let symbol_transitions = &symbol_transitions[i];
+        let cases: TokenStream = symbol_transitions
+            .into_iter()
+            .map(|(range, tu)| {
+                let start = *range.start();
+                let end = *range.end();
+                let conditions = if tu.end_only || (tu.start_only && i != 0) {
+                    // end_only should already be optimized out, but we are not at the end so this transition should never happen.
+                    // since we always start at state 0, start_only is only satisfied when `i == 0`
+                    quote! { if false }
+                } else if tu.start_only && i == 0 {
+                    // if we ever come back to state 0, we may actually need to check start
+                    quote! { if start }
+                } else {
+                    TokenStream::new()
+                };
+
+                let new_state_fn_ident = &fn_idents[tu.state];
+                let capture_statements = make_capture_statements(tu);
+
+                return quote! {
+                    ::core::option::Option::Some(#start..=#end) #conditions => {
+                        #capture_statements
+                        #new_state_fn_ident(bytes, byte_idx + 1, captures, false)
+                    }
+                };
+            })
+            .collect();
+
+        return quote! {
+            fn #fn_ident<'a>(
+                mut bytes: ::core::str::Bytes<'a>,
+                byte_idx: usize,
+                mut captures: [(usize, usize); #num_captures],
+                start: bool,
+            ) -> Option<[(usize, usize); #num_captures]> {
+                return match bytes.next() {
+                    ::core::option::Option::None => {
+                        #end_case
+                    }
+                    #cases
+                    ::core::option::Option::Some(_) => None,
+                };
+            }
+        };
+    };
+    let exec_funcs: TokenStream = (0..states.len())
+        .filter(|i| !excluded_states[*i])
+        .map(make_exec_func)
+        .collect();
+
+    return quote! {{
+        fn test<'a>(text: &'a str) -> bool {
+            #test_funcs
+            return func_state_0(text.bytes(), true);
+        }
+        fn exec<'a>(text: &'a str) -> ::core::option::Option<[::core::option::Option<&'a str>; #num_captures]> {
+            let captures: [(usize, usize); #num_captures] = [(usize::MAX, usize::MAX); #num_captures];
+
+            #exec_funcs
+            let captures = func_state_0(text.bytes(), 0, captures, true)?;
+
+            let mut capture_strs = [::core::option::Option::None; #num_captures];
+            for (i, (start, end)) in captures.into_iter().enumerate() {
+                if start != usize::MAX {
+                    assert_ne!(end, usize::MAX);
+                    // assert!(start <= end);
+                    capture_strs[i] = text.get(start..end);
+                    assert!(capture_strs[i].is_some());
+                } else {
+                    assert_eq!(end, usize::MAX);
+                }
+            }
+            return ::core::option::Option::Some(capture_strs);
         }
 
         ::ere_core::one_pass_u8::__load_u8onepass(test, exec)

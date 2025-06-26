@@ -743,6 +743,58 @@ impl U8NFA {
             + 1;
     }
 
+    /// Tries to find a [topological ordering](https://en.wikipedia.org/wiki/Topological_sorting)
+    /// from the start node to the accept node.
+    ///
+    /// If successful (the graph is a DAG), it will return a sequence of indices.
+    /// Since multiple topological orderings may exist for a graph, the returned ordering may not be unique.
+    ///
+    /// If there is no topological ordering (the graph contains cycles and is not a DAG)
+    /// then it will return `None`.
+    ///
+    /// Will also return `None` if some node could not be reached. This should not happen.
+    pub fn topological_ordering(&self) -> Option<Vec<usize>> {
+        let mut done = vec![false; self.states.len()];
+        let mut active = vec![false; self.states.len()];
+        let mut order = Vec::new();
+
+        enum StackItem {
+            PreVisit(usize),
+            PostVisit(usize),
+        }
+        let mut stack = vec![StackItem::PreVisit(0)];
+
+        while let Some(item) = stack.pop() {
+            match item {
+                StackItem::PreVisit(node) => {
+                    if done[node] {
+                        continue;
+                    } else if active[node] {
+                        return None;
+                    }
+                    active[node] = true;
+                    stack.push(StackItem::PostVisit(node));
+                    for tr in &self.states[node].transitions {
+                        stack.push(StackItem::PreVisit(tr.to));
+                    }
+                    for ep in &self.states[node].epsilons {
+                        stack.push(StackItem::PreVisit(ep.to));
+                    }
+                }
+                StackItem::PostVisit(node) => {
+                    done[node] = true;
+                    order.push(node);
+                }
+            }
+        }
+
+        if order.len() != self.states.len() {
+            return None;
+        }
+        order.reverse();
+        return Some(order);
+    }
+
     /// Writes a LaTeX TikZ representation to visualize the graph.
     ///
     /// If `include_doc` is `true`, will include the headers.

@@ -429,6 +429,16 @@ impl Atom {
             Atom::NonmatchingList(vec) => !vec.into_iter().any(|b| b.check(c)),
         };
     }
+    pub(crate) fn serialize_check(&self) -> TokenStream {
+        let ranges = self.to_ranges();
+        let mut stream = TokenStream::new();
+        for range in ranges {
+            let start = range.start();
+            let end = range.end();
+            stream.extend(quote! { (#start <= c && c <= #end) || });
+        }
+        return quote! {(#stream false)};
+    }
     /// Produces the sorted, minimal set of ranges to represent the Atom.
     ///
     /// Example:

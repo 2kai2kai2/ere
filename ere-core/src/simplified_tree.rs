@@ -33,6 +33,9 @@ impl SimplifiedTreeNode {
         }
         return SimplifiedTreeNode::Union(vec![self, other]);
     }
+    pub fn capture(self, group_num: usize) -> SimplifiedTreeNode {
+        return SimplifiedTreeNode::Capture(Box::new(self), group_num);
+    }
     pub fn concat(self, other: SimplifiedTreeNode) -> SimplifiedTreeNode {
         if let SimplifiedTreeNode::Concat(mut c) = self {
             c.push(other);
@@ -93,6 +96,62 @@ impl SimplifiedTreeNode {
     //     }
     //     return self._check("", text.len()).is_some();
     // }
+
+    /// An upper bound for matched text length, in bytes.
+    /// If possibly infinite, returns `None`.
+    pub fn max_bytes(&self) -> Option<usize> {
+        return match self {
+            SimplifiedTreeNode::Empty => Some(0),
+            SimplifiedTreeNode::Symbol(atom) => {
+                let range = atom.to_ranges().last()?.clone();
+                Some(range.end().len_utf8())
+            }
+            SimplifiedTreeNode::Union(nodes) if nodes.is_empty() => Some(0),
+            SimplifiedTreeNode::Union(nodes) => nodes
+                .iter()
+                .map(SimplifiedTreeNode::max_bytes)
+                .reduce(|a, b| Some(std::cmp::max(a?, b?)))?,
+            SimplifiedTreeNode::Capture(node, _) => node.max_bytes(),
+            SimplifiedTreeNode::Concat(nodes) if nodes.is_empty() => Some(0),
+            SimplifiedTreeNode::Concat(nodes) => {
+                nodes.iter().map(SimplifiedTreeNode::max_bytes).sum()
+            }
+            SimplifiedTreeNode::Repeat(node, times) => Some(node.max_bytes()? * times),
+            SimplifiedTreeNode::UpTo(node, times, _) => Some(node.max_bytes()? * times),
+            SimplifiedTreeNode::Star(_, _) => None,
+            SimplifiedTreeNode::Start => Some(0),
+            SimplifiedTreeNode::End => Some(0),
+            SimplifiedTreeNode::Never => Some(0),
+        };
+    }
+
+    /// A lower bound for matched text length, in bytes.
+    pub fn min_bytes(&self) -> usize {
+        return match self {
+            SimplifiedTreeNode::Empty => 0,
+            SimplifiedTreeNode::Symbol(atom) => {
+                let Some(range) = atom.to_ranges().first().cloned() else {
+                    return 0;
+                };
+                range.start().len_utf8()
+            }
+            SimplifiedTreeNode::Union(nodes) => nodes
+                .iter()
+                .map(SimplifiedTreeNode::min_bytes)
+                .min()
+                .unwrap_or(0),
+            SimplifiedTreeNode::Capture(node, _) => node.min_bytes(),
+            SimplifiedTreeNode::Concat(nodes) => {
+                nodes.iter().map(SimplifiedTreeNode::min_bytes).sum()
+            }
+            SimplifiedTreeNode::Repeat(node, times) => node.min_bytes() * times,
+            SimplifiedTreeNode::UpTo(node, times, _) => node.min_bytes() * times,
+            SimplifiedTreeNode::Star(_, _) => 0,
+            SimplifiedTreeNode::Start => 0,
+            SimplifiedTreeNode::End => 0,
+            SimplifiedTreeNode::Never => 0,
+        };
+    }
 }
 impl SimplifiedTreeNode {
     fn from_sub_ere(
@@ -187,6 +246,11 @@ impl SimplifiedTreeNode {
     pub fn from_ere(value: &ERE, config: &Config) -> (SimplifiedTreeNode, usize) {
         let (root, groups) = SimplifiedTreeNode::from_sub_ere(value, 1, config);
         return (SimplifiedTreeNode::Capture(Box::new(root), 0), groups);
+    }
+
+    /// [`SimplifiedTreeNode::from_ere`] except it doesn't wrap in the capture group 0
+    pub(crate) fn from_ere_no_group0(value: &ERE, config: &Config) -> (SimplifiedTreeNode, usize) {
+        return SimplifiedTreeNode::from_sub_ere(value, 1, config);
     }
 }
 impl From<ERE> for SimplifiedTreeNode {
