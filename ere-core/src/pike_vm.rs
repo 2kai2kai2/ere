@@ -1,4 +1,10 @@
-//! Implements a Pike VM-like regex engine.
+//! Not exactly the PikeVM, but close enough that I am naming it that.
+//! It works similarly, except that since we are building at compile-time, there are benefits from inlining splitting.
+//!
+//! Due to the optimizations done earlier for the [`WorkingNFA`], we also have a slightly different NFA structure.
+//! Currently we flatten all epsilon transitions for the VM so that epsilon transitions are at most a single step between symbols.
+//! I'll have to review to ensure we avoid this causing large binary size overhead,
+//! but it should be worst-case `O(n^2)` in the number of states, and far fewer on average.
 
 use crate::{
     nfa_static,
@@ -39,34 +45,6 @@ impl<const N: usize, S: Send + Sync + Copy + Eq + std::fmt::Debug> std::fmt::Deb
             .field("state", &self.state)
             .field("captures", &CapturesDebug(&self.captures))
             .finish();
-    }
-}
-
-/// Not exactly the PikeVM, but close enough that I am naming it that.
-/// It works similarly, except that since we are building at compile-time, there are benefits from inlining splitting.
-///
-/// Due to the optimizations done earlier for the [`WorkingNFA`], we also have a slightly different NFA structure.
-/// Currently we flatten all epsilon transitions for the VM so that epsilon transitions are at most a single step between symbols.
-/// I'll have to review to ensure we avoid this causing large binary size overhead,
-/// but it should be worst-case `O(n^2)` in the number of states, and far fewer on average.
-pub struct PikeVM<const N: usize> {
-    test_fn: fn(&str) -> bool,
-    exec_fn: for<'a> fn(&'a str) -> Option<[Option<&'a str>; N]>,
-}
-impl<const N: usize> PikeVM<N> {
-    pub fn test(&self, text: &str) -> bool {
-        return (self.test_fn)(text);
-    }
-    pub fn exec<'a>(&self, text: &'a str) -> Option<[Option<&'a str>; N]> {
-        return (self.exec_fn)(text);
-    }
-
-    /// Only intended for internal use by macros.
-    pub const fn __load(
-        test_fn: fn(&str) -> bool,
-        exec_fn: for<'a> fn(&'a str) -> Option<[Option<&'a str>; N]>,
-    ) -> PikeVM<N> {
-        return PikeVM { test_fn, exec_fn };
     }
 }
 
@@ -425,6 +403,8 @@ fn serialize_pike_vm_epsilon_propogation(
 
 /// Converts a [`WorkingNFA`] into a format that, when returned by a proc macro, will
 /// create the corresponding Pike VM.
+///
+/// Will evaluate to a `const` pair `(test_fn, exec_fn)`.
 pub(crate) fn serialize_pike_vm_token_stream(nfa: &WorkingNFA) -> proc_macro2::TokenStream {
     let WorkingNFA { states, .. } = nfa;
     let capture_groups = nfa.num_capture_groups();
@@ -512,6 +492,6 @@ pub(crate) fn serialize_pike_vm_token_stream(nfa: &WorkingNFA) -> proc_macro2::T
             return Some(captures);
         }
 
-        ::ere_core::pike_vm::PikeVM::<#capture_groups>::__load(test, exec)
+        (test, exec)
     }};
 }

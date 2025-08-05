@@ -15,69 +15,46 @@ pub mod visualization;
 pub mod working_nfa;
 pub mod working_u8_nfa;
 
-enum RegexEngines<const N: usize> {
-    NFA(nfa_static::NFAStatic<N>),
-    PikeVM(pike_vm::PikeVM<N>),
-    U8PikeVM(pike_vm_u8::U8PikeVM<N>),
-    U8OnePass(one_pass_u8::U8OnePass<N>),
-}
-
 /// A regular expression (specifically, a [POSIX ERE](https://en.wikibooks.org/wiki/Regular_Expressions/POSIX-Extended_Regular_Expressions)).
 ///
 /// Internally, this may contain one of several engines depending on the expression.
 ///
 /// The const generic `N` represents the number of capture groups (including capture group 0 which is the entire expression).
 /// It defaults to `1` (for just capture group 0), but you will need to specify it in the type for expressions with more capture groups.
-pub struct Regex<const N: usize = 1>(RegexEngines<N>);
+pub struct Regex<const N: usize = 1> {
+    test_fn: fn(&str) -> bool,
+    exec_fn: for<'a> fn(&'a str) -> Option<[Option<&'a str>; N]>,
+}
 impl<const N: usize> Regex<N> {
     /// Returns whether or not the text is matched by the regular expression.
+    #[inline]
     pub fn test(&self, text: &str) -> bool {
-        return match &self.0 {
-            RegexEngines::NFA(nfa) => nfa.test(text),
-            RegexEngines::PikeVM(pike_vm) => pike_vm.test(text),
-            RegexEngines::U8PikeVM(pike_vm) => pike_vm.test(text),
-            RegexEngines::U8OnePass(one_pass) => one_pass.test(text),
-        };
+        return (self.test_fn)(text);
     }
-
+    #[inline]
     pub fn exec<'a>(&self, text: &'a str) -> Option<[Option<&'a str>; N]> {
-        return match &self.0 {
-            RegexEngines::NFA(nfa) => unimplemented!(),
-            RegexEngines::PikeVM(pike_vm) => pike_vm.exec(text),
-            RegexEngines::U8PikeVM(pike_vm) => pike_vm.exec(text),
-            RegexEngines::U8OnePass(one_pass) => one_pass.exec(text),
-        };
-    }
-}
-impl<const N: usize> std::fmt::Display for Regex<N> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return match &self.0 {
-            RegexEngines::NFA(nfastatic) => nfastatic.fmt(f),
-            RegexEngines::PikeVM(_) => f.write_str("<Compiled VM>"),
-            RegexEngines::U8PikeVM(_) => f.write_str("<Compiled VM>"),
-            RegexEngines::U8OnePass(_) => f.write_str("<Compiled VM>"),
-        };
+        return (self.exec_fn)(text);
     }
 }
 
-pub const fn __construct_pikevm_regex<const N: usize>(vm: pike_vm::PikeVM<N>) -> Regex<N> {
-    return Regex(RegexEngines::PikeVM(vm));
-}
-pub const fn __construct_u8pikevm_regex<const N: usize>(vm: pike_vm_u8::U8PikeVM<N>) -> Regex<N> {
-    return Regex(RegexEngines::U8PikeVM(vm));
-}
-pub const fn __construct_nfa_regex<const N: usize>(nfa: nfa_static::NFAStatic<N>) -> Regex<N> {
-    return Regex(RegexEngines::NFA(nfa));
-}
-pub const fn __construct_u8onepass_regex<const N: usize>(
-    nfa: one_pass_u8::U8OnePass<N>,
+/// Intended to be used in macros only.
+#[inline]
+pub const fn __construct_regex<const N: usize>(
+    fn_pair: (
+        fn(&str) -> bool,
+        for<'a> fn(&'a str) -> Option<[Option<&'a str>; N]>,
+    ),
 ) -> Regex<N> {
-    return Regex(RegexEngines::U8OnePass(nfa));
+    return Regex {
+        test_fn: fn_pair.0,
+        exec_fn: fn_pair.1,
+    };
 }
 
 /// Tries to pick the best engine.
-pub fn __compile_regex(stream: TokenStream) -> TokenStream {
-    let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
+///
+/// Returns a stream that evaluates to a pair `(test_fn, exec_fn)`
+fn pick_engine(ere: parse_tree::ERE) -> proc_macro2::TokenStream {
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
 
@@ -94,42 +71,52 @@ pub fn __compile_regex(stream: TokenStream) -> TokenStream {
     let u8_nfa = working_u8_nfa::U8NFA::new(&nfa);
 
     if let Some(engine) = one_pass_u8::serialize_one_pass_token_stream(&u8_nfa) {
-        return quote! { ::ere_core::__construct_u8onepass_regex(#engine) }.into();
-    }
-
-    if is_ascii {
-        let engine = pike_vm_u8::serialize_pike_vm_token_stream(&u8_nfa);
-        return quote! { ::ere_core::__construct_u8pikevm_regex(#engine) }.into();
-    } else if true {
-        let engine = pike_vm::serialize_pike_vm_token_stream(&nfa);
-        return quote! { ::ere_core::__construct_pikevm_regex(#engine) }.into();
+        return engine;
+    } else if is_ascii {
+        return pike_vm_u8::serialize_pike_vm_token_stream(&u8_nfa);
     } else {
-        let engine = nfa_static::serialize_nfa_as_token_stream(&nfa);
-        return quote! { ::ere_core::__construct_nfa_regex(#engine) }.into();
+        return pike_vm::serialize_pike_vm_token_stream(&nfa);
     };
 }
 
-/// Always uses the [`pike_vm::PikeVM`] engine and returns an tokenized instance of it
-/// instead of [`Regex`]
+/// Tries to pick the best engine.
+pub fn __compile_regex(stream: TokenStream) -> TokenStream {
+    let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
+    let fn_pair = pick_engine(ere);
+    return quote! {
+        {
+            ::ere_core::__construct_regex(#fn_pair)
+        }
+    }
+    .into();
+}
+
+/// Always uses the [`pike_vm`] engine
 pub fn __compile_regex_engine_pike_vm(stream: TokenStream) -> TokenStream {
     let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
-    return pike_vm::serialize_pike_vm_token_stream(&nfa).into();
+    let fn_pair = pike_vm::serialize_pike_vm_token_stream(&nfa);
+    return quote! {
+        ::ere_core::__construct_regex(#fn_pair)
+    }
+    .into();
 }
 
-/// Always uses the [`pike_vm_u8::U8PikeVM`] engine and returns an tokenized instance of it
-/// instead of [`Regex`]
+/// Always uses the [`pike_vm_u8`] engine
 pub fn __compile_regex_engine_pike_vm_u8(stream: TokenStream) -> TokenStream {
     let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
     let nfa = working_u8_nfa::U8NFA::new(&nfa);
-    return pike_vm_u8::serialize_pike_vm_token_stream(&nfa).into();
+    let fn_pair = pike_vm_u8::serialize_pike_vm_token_stream(&nfa);
+    return quote! {
+        ::ere_core::__construct_regex(#fn_pair)
+    }
+    .into();
 }
 
-/// Always uses the [`one_pass_u8::U8OnePass`] engine and returns an tokenized instance of it
-/// instead of [`Regex`].
+/// Always uses the [`one_pass_u8`]
 ///
 /// Will return a compiler error if regex was not one-pass and could not be optimized to become one-pass.
 pub fn __compile_regex_engine_one_pass_u8(stream: TokenStream) -> TokenStream {
@@ -137,22 +124,25 @@ pub fn __compile_regex_engine_one_pass_u8(stream: TokenStream) -> TokenStream {
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
     let nfa = working_u8_nfa::U8NFA::new(&nfa);
-    return one_pass_u8::serialize_one_pass_token_stream(&nfa)
-        .unwrap_or(
-            syn::parse::Error::new(
-                proc_macro2::Span::call_site(),
-                "Regex was not one-pass and could not be optimized to become one pass. 
+    let Some(fn_pair) = one_pass_u8::serialize_one_pass_token_stream(&nfa) else {
+        return syn::parse::Error::new(
+            proc_macro2::Span::call_site(),
+            "Regex was not one-pass and could not be optimized to become one pass. 
 Try using a different engine.",
-            )
-            .to_compile_error(),
         )
+        .to_compile_error()
         .into();
+    };
+    return quote! {
+        ::ere_core::__construct_regex(#fn_pair)
+    }
+    .into();
 }
 
 #[cfg(feature = "unstable-attr-regex")]
 pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStream {
     let ere: parse_tree::ERE = syn::parse_macro_input!(attr);
-    let tree = simplified_tree::SimplifiedTreeNode::from(ere);
+    let tree = simplified_tree::SimplifiedTreeNode::from(ere.clone());
     let nfa = working_nfa::WorkingNFA::new(&tree);
 
     let capture_groups = nfa.num_capture_groups();
@@ -224,44 +214,29 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
         })
         .collect();
 
-    // TODO: is it possible to avoid all this wrapping?
+    // TODO: is it possible to more naturally extract struct args as optional or not?
+    let fn_pair = pick_engine(ere);
     let struct_name = regex_struct.ident;
-    if is_ascii {
-        let nfa = working_u8_nfa::U8NFA::new(&nfa);
-        let engine = pike_vm_u8::serialize_pike_vm_token_stream(&nfa);
-        let implementation = quote! {
-            impl<'a> #struct_name<'a> {
-                const ENGINE: ::ere_core::pike_vm_u8::U8PikeVM::<#capture_groups> = #engine;
-                pub fn test(text: &str) -> bool {
-                    return Self::ENGINE.test(text);
-                }
-                pub fn exec(text: &'a str) -> ::core::option::Option<#struct_name<'a>> {
-                    let result: [::core::option::Option<&'a str>; #capture_groups] = Self::ENGINE.exec(text)?;
-                    return ::core::option::Option::<#struct_name<'a>>::Some(#struct_name(
-                        #struct_args
-                    ));
-                }
+
+    let implementation = quote! {
+        impl<'a> #struct_name<'a> {
+            const ENGINE: (
+                fn(&str) -> bool,
+                fn(&'a str) -> ::core::option::Option<[::core::option::Option<&'a str>; #capture_groups]>,
+            ) = #fn_pair;
+            #[inline]
+            pub fn test(text: &str) -> bool {
+                return (Self::ENGINE.0)(text);
             }
-        };
-        out.extend(implementation);
-    } else {
-        let engine = pike_vm::serialize_pike_vm_token_stream(&nfa);
-        let implementation = quote! {
-            impl<'a> #struct_name<'a> {
-                const ENGINE: ::ere_core::pike_vm::PikeVM::<#capture_groups> = #engine;
-                pub fn test(text: &str) -> bool {
-                    return Self::ENGINE.test(text);
-                }
-                pub fn exec(text: &'a str) -> ::core::option::Option<#struct_name<'a>> {
-                    let result: [::core::option::Option<&'a str>; #capture_groups] = Self::ENGINE.exec(text)?;
-                    return ::core::option::Option::<#struct_name<'a>>::Some(#struct_name(
-                        #struct_args
-                    ));
-                }
+            pub fn exec(text: &'a str) -> ::core::option::Option<#struct_name<'a>> {
+                let result: [::core::option::Option<&'a str>; #capture_groups] = (Self::ENGINE.1)(text)?;
+                return ::core::option::Option::<#struct_name<'a>>::Some(#struct_name(
+                    #struct_args
+                ));
             }
-        };
-        out.extend(implementation);
-    }
+        }
+    };
+    out.extend(implementation);
 
     return out.into();
 }

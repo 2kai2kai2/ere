@@ -71,6 +71,8 @@ impl ThreadUpdates {
 /// A [`U8NFA`] should be one-pass whenever its corresponding [`WorkingNFA`](`crate::working_nfa::WorkingNFA`) is.
 /// There are some optimizations that may make a non-one-pass NFA into a one-pass one:
 /// For example, `^(a|a|b)$` into `^(a|b)$`
+///
+/// Will evaluate to a `const` pair `(test_fn, exec_fn)`.
 pub(crate) fn serialize_one_pass_token_stream(nfa: &U8NFA) -> Option<TokenStream> {
     let num_captures = nfa.num_capture_groups();
     let mut symbol_transitions = vec![Vec::new(); nfa.states.len()];
@@ -156,6 +158,7 @@ pub(crate) fn serialize_one_pass_token_stream(nfa: &U8NFA) -> Option<TokenStream
     }
 }
 
+/// Will evaluate to a `const` pair `(test_fn, exec_fn)`.
 fn codegen_vmlike(
     nfa: &U8NFA,
     num_captures: usize,
@@ -356,10 +359,11 @@ fn codegen_vmlike(
             return Some(capture_strs);
         }
 
-        ::ere_core::one_pass_u8::__load_u8onepass(test, exec)
+        (test, exec)
     }}.into();
 }
 
+/// Will evaluate to a `const` pair `(test_fn, exec_fn)`.
 fn codegen_functional(
     nfa: &U8NFA,
     num_captures: usize,
@@ -567,6 +571,6 @@ fn codegen_functional(
             return ::core::option::Option::Some(capture_strs);
         }
 
-        ::ere_core::one_pass_u8::__load_u8onepass(test, exec)
+        (test, exec)
     }}.into();
 }

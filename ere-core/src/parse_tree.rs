@@ -41,6 +41,7 @@ macro_rules! match_prefix {
 
 /// A represents a [POSIX-compliant ERE](https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html).
 /// Primarily intended for use as a parser.
+#[derive(Clone)]
 pub struct ERE(pub(crate) Vec<EREBranch>);
 impl ERE {
     fn take<'a>(rest: &'a str) -> Option<(&'a str, ERE)> {
@@ -91,6 +92,7 @@ impl Display for ERE {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct EREBranch(pub(crate) Vec<EREPart>);
 impl EREBranch {
     fn take<'a>(rest: &'a str) -> Option<(&'a str, EREBranch)> {
@@ -113,6 +115,7 @@ impl Display for EREBranch {
     }
 }
 
+#[derive(Clone)]
 pub(crate) enum EREPart {
     Single(EREExpression),
     Quantified(EREExpression, Quantifier),
@@ -154,6 +157,7 @@ impl Display for EREPart {
     }
 }
 
+#[derive(Clone)]
 pub(crate) enum EREExpression {
     Atom(Atom),
     Subexpression(ERE),
@@ -529,6 +533,18 @@ impl Atom {
                 ranges
             }
         };
+    }
+    pub fn max_bytes(&self) -> usize {
+        match self.to_ranges().last() {
+            None => 0,
+            Some(range) => range.end().len_utf8(),
+        }
+    }
+    pub fn min_bytes(&self) -> usize {
+        match self.to_ranges().first() {
+            None => 0,
+            Some(range) => range.start().len_utf8(),
+        }
     }
 }
 impl Display for Atom {

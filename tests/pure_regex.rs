@@ -6,15 +6,9 @@ use ere_macros::{compile_regex_pikevm, compile_regex_u8onepass, compile_regex_u8
 #[test]
 fn phone_number() {
     const REGEXES: [Regex<2>; 3] = [
-        ere_core::__construct_pikevm_regex(compile_regex_pikevm!(
-            r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"
-        )),
-        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(
-            r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"
-        )),
-        ere_core::__construct_u8onepass_regex(compile_regex_u8onepass!(
-            r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"
-        )),
+        compile_regex_pikevm!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"),
+        compile_regex_u8pikevm!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"),
+        compile_regex_u8onepass!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"),
     ];
 
     for regex in REGEXES {
@@ -34,12 +28,8 @@ fn phone_number() {
 #[test]
 fn byte_value_exec() {
     const REGEXES: [Regex<2>; 2] = [
-        ere_core::__construct_pikevm_regex(compile_regex_pikevm!(
-            r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
-        )),
-        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(
-            r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
-        )),
+        compile_regex_pikevm!(r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"),
+        compile_regex_u8pikevm!(r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"),
         // one pass not working yet, needs further optimizations
     ];
     for regex in REGEXES {
@@ -61,12 +51,12 @@ fn byte_value_exec() {
 #[test]
 fn ipv4_exec() {
     const REGEXES: [Regex<5>; 2] = [
-        ere_core::__construct_pikevm_regex(compile_regex_pikevm!(
+        compile_regex_pikevm!(
             r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
-        )),
-        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(
+        ),
+        compile_regex_u8pikevm!(
             r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
-        )),
+        ),
         // one pass not working yet, needs further optimizations
     ];
 
@@ -99,8 +89,8 @@ fn ipv4_exec() {
 #[test]
 fn needle() {
     const REGEXES: [Regex; 2] = [
-        ere_core::__construct_pikevm_regex(compile_regex_pikevm!(r"nee+dle")),
-        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(r"nee+dle")),
+        compile_regex_pikevm!(r"nee+dle"),
+        compile_regex_u8pikevm!(r"nee+dle"),
         // not one-pass because it is not start/end anchored
     ];
     for regex in REGEXES {
@@ -120,9 +110,9 @@ fn needle() {
 #[test]
 fn dot() {
     const REGEXES: [Regex; 3] = [
-        ere_core::__construct_pikevm_regex(compile_regex_pikevm!("^.$")),
-        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!("^.$")),
-        ere_core::__construct_u8onepass_regex(compile_regex_u8onepass!("^.$")),
+        compile_regex_pikevm!("^.$"),
+        compile_regex_u8pikevm!("^.$"),
+        compile_regex_u8onepass!("^.$"),
     ];
     for regex in REGEXES {
         for c in '\u{0001}'..=char::MAX {
@@ -141,15 +131,11 @@ fn dot() {
 #[test]
 fn duplicate_paths() {
     const REGEXES: [Regex<3>; 3] = [
-        ere_core::__construct_pikevm_regex(compile_regex_pikevm!("^(ab|bc|ab|bc)(xy|yz|yz|xy)$")),
-        ere_core::__construct_u8pikevm_regex(compile_regex_u8pikevm!(
-            "^(ab|bc|ab|bc)(xy|yz|yz|xy)$"
-        )),
+        compile_regex_pikevm!("^(ab|bc|ab|bc)(xy|yz|yz|xy)$"),
+        compile_regex_u8pikevm!("^(ab|bc|ab|bc)(xy|yz|yz|xy)$"),
         // one-pass because it can be simplified to one-pass
         // since its branching paths are actually the same and get merged
-        ere_core::__construct_u8onepass_regex(compile_regex_u8onepass!(
-            "^(ab|bc|ab|bc)(xy|yz|yz|xy)$"
-        )),
+        compile_regex_u8onepass!("^(ab|bc|ab|bc)(xy|yz|yz|xy)$"),
     ];
     for regex in &REGEXES {
         assert!(regex.test("abxy"));

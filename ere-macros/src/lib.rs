@@ -8,7 +8,7 @@ extern crate proc_macro;
 ///
 /// This compilation happens during build using proc macros,
 /// resulting in rust code equivalent to your regex.
-/// This code can then by further optimized by rustc when compiled directly into the binary.
+/// This code can then by further optimized by rustc/llvm when compiled directly into the binary.
 ///
 /// The generic `const N: usize` will be the number of capture groups present in the regular expression
 /// (including capture group 0 which is the entire matched text).
@@ -26,69 +26,69 @@ pub fn compile_regex(stream: TokenStream) -> TokenStream {
     return ere_core::__compile_regex(stream);
 }
 
-/// Checks and compiles a regular expression into a [`ere_core::pike_vm::PikeVM<N>`].
+/// Checks and compiles a regular expression into a into a [`ere_core::Regex<N>`] with the [`ere_core::pike_vm`] engine.
 /// Unless you specifically want this engine, you might want to use [`compile_regex!`] instead.
 ///
 /// This compilation happens during build using proc macros,
 /// resulting in rust code equivalent to your regex.
-/// This code can then by further optimized by rustc when compiled directly into the binary.
+/// This code can then by further optimized by rustc/llvm when compiled directly into the binary.
 ///
 /// The generic `const N: usize` will be the number of capture groups present in the regular expression
 /// (including capture group 0 which is the entire matched text).
 /// You will need to properly specify this in the generics for the regex (default if unspecified is 1).
-/// When using [`PikeVM<N>::exec`](`ere_core::pike_vm::PikeVM<N>::exec`), this is the length of the captures returned.
+/// When using [`Regex<N>::exec`](`ere_core::Regex<N>::exec`), this is the length of the captures returned.
 ///
 /// ```
-/// use ere_core::pike_vm::PikeVM;
+/// use ere_core::Regex;
 /// use ere_macros::compile_regex_pikevm;
 ///
-/// const MY_REGEX: PikeVM<2> = compile_regex_pikevm!("a(b?)c");
+/// const MY_REGEX: Regex<2> = compile_regex_pikevm!("a(b?)c");
 /// ```
 #[proc_macro]
 pub fn compile_regex_pikevm(stream: TokenStream) -> TokenStream {
     return ere_core::__compile_regex_engine_pike_vm(stream);
 }
 
-/// Checks and compiles a regular expression into a [`ere_core::pike_vm_u8::U8PikeVM<N>`].
+/// Checks and compiles a regular expression into a into a [`ere_core::Regex<N>`] with the [`ere_core::pike_vm_u8`] engine.
 /// Unless you specifically want this engine, you might want to use [`compile_regex!`] instead.
 ///
 /// This compilation happens during build using proc macros,
 /// resulting in rust code equivalent to your regex.
-/// This code can then by further optimized by rustc when compiled directly into the binary.
+/// This code can then by further optimized by rustc/llvm when compiled directly into the binary.
 ///
 /// The generic `const N: usize` will be the number of capture groups present in the regular expression
 /// (including capture group 0 which is the entire matched text).
 /// You will need to properly specify this in the generics for the regex (default if unspecified is 1).
-/// When using [`U8PikeVM<N>::exec`](`ere_core::pike_vm_u8::U8PikeVM<N>::exec`), this is the length of the captures returned.
+/// When using [`Regex<N>::exec`](`ere_core::Regex<N>::exec`), this is the length of the captures returned.
 ///
 /// ```
-/// use ere_core::pike_vm_u8::U8PikeVM;
+/// use ere_core::Regex;
 /// use ere_macros::compile_regex_u8pikevm;
 ///
-/// const MY_REGEX: U8PikeVM<2> = compile_regex_u8pikevm!("a(b?)c");
+/// const MY_REGEX: Regex<2> = compile_regex_u8pikevm!("a(b?)c");
 /// ```
 #[proc_macro]
 pub fn compile_regex_u8pikevm(stream: TokenStream) -> TokenStream {
     return ere_core::__compile_regex_engine_pike_vm_u8(stream);
 }
 
-/// Checks and compiles a regular expression into a [`ere_core::one_pass_u8::U8OnePass<N>`].
+/// Checks and compiles a regular expression into a [`ere_core::Regex<N>`] with the [`ere_core::one_pass_u8`] engine.
 /// Unless you specifically want this engine, you might want to use [`compile_regex!`] instead.
 ///
 /// This compilation happens during build using proc macros,
 /// resulting in rust code equivalent to your regex.
-/// This code can then by further optimized by rustc when compiled directly into the binary.
+/// This code can then by further optimized by rustc/llvm when compiled directly into the binary.
 ///
 /// The generic `const N: usize` will be the number of capture groups present in the regular expression
 /// (including capture group 0 which is the entire matched text).
 /// You will need to properly specify this in the generics for the regex (default if unspecified is 1).
-/// When using [`U8OnePass<N>::exec`](`ere_core::one_pass_u8::U8OnePass<N>::exec`), this is the length of the captures returned.
+/// When using [`Regex<N>::exec`](`ere_core::Regex<N>::exec`), this is the length of the captures returned.
 ///
 /// ```
-/// use ere_core::one_pass_u8::U8OnePass;
+/// use ere_core::Regex;
 /// use ere_macros::compile_regex_u8onepass;
 ///
-/// const MY_REGEX: U8OnePass<2> = compile_regex_u8onepass!("^a(b?)c$");
+/// const MY_REGEX: Regex<2> = compile_regex_u8onepass!("^a(b?)c$");
 /// ```
 ///
 /// ---
