@@ -5,6 +5,7 @@ use quote::quote;
 extern crate proc_macro;
 
 pub mod config;
+pub mod fixed_offset;
 pub mod nfa_static;
 pub mod one_pass_u8;
 pub mod parse_tree;
@@ -51,10 +52,17 @@ pub const fn __construct_regex<const N: usize>(
     };
 }
 
-/// Tries to pick the best engine.
+/// Tries to pick the best engine that doesn't rely on sub-engines.
 ///
 /// Returns a stream that evaluates to a pair `(test_fn, exec_fn)`
-fn pick_engine(ere: parse_tree::ERE) -> proc_macro2::TokenStream {
+fn pick_base_engine(
+    ere: parse_tree::ERE,
+) -> (
+    proc_macro2::TokenStream,
+    simplified_tree::SimplifiedTreeNode,
+    working_nfa::WorkingNFA,
+    working_u8_nfa::U8NFA,
+) {
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
 
@@ -70,13 +78,31 @@ fn pick_engine(ere: parse_tree::ERE) -> proc_macro2::TokenStream {
 
     let u8_nfa = working_u8_nfa::U8NFA::new(&nfa);
 
-    if let Some(engine) = one_pass_u8::serialize_one_pass_token_stream(&u8_nfa) {
-        return engine;
+    let base_engine = if let Some(engine) = one_pass_u8::serialize_one_pass_token_stream(&u8_nfa) {
+        engine
     } else if is_ascii {
-        return pike_vm_u8::serialize_pike_vm_token_stream(&u8_nfa);
+        pike_vm_u8::serialize_pike_vm_token_stream(&u8_nfa)
     } else {
-        return pike_vm::serialize_pike_vm_token_stream(&nfa);
+        pike_vm::serialize_pike_vm_token_stream(&nfa)
     };
+    return (base_engine, tree, nfa, u8_nfa);
+}
+
+/// Tries to pick the best engine that doesn't rely on sub-engines.
+///
+/// Returns a stream that evaluates to a pair `(test_fn, exec_fn)`
+fn pick_engine(ere: parse_tree::ERE) -> proc_macro2::TokenStream {
+    let (base_engine, _, _, u8_nfa) = pick_base_engine(ere);
+
+    // Consider nested engines
+    if let Some(offsets) = fixed_offset::get_fixed_offsets(&u8_nfa) {
+        return fixed_offset::serialize_fixed_offset_token_stream(
+            base_engine,
+            offsets,
+            u8_nfa.num_capture_groups(),
+        );
+    };
+    return base_engine;
 }
 
 /// Tries to pick the best engine.
@@ -133,6 +159,32 @@ Try using a different engine.",
         .to_compile_error()
         .into();
     };
+    return quote! {
+        ::ere_core::__construct_regex(#fn_pair)
+    }
+    .into();
+}
+
+/// Always uses the [`fixed_offset`]
+///
+/// Will return a compiler error if regex was not fixed offset.
+pub fn __compile_regex_engine_fixed_offset(stream: TokenStream) -> TokenStream {
+    let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
+    let (base_engine, _, _, u8_nfa) = pick_base_engine(ere);
+
+    let Some(offsets) = fixed_offset::get_fixed_offsets(&u8_nfa) else {
+        return syn::parse::Error::new(
+            proc_macro2::Span::call_site(),
+            "Regex capture groups were not fixed offset. Try using a different engine.",
+        )
+        .to_compile_error()
+        .into();
+    };
+    let fn_pair = fixed_offset::serialize_fixed_offset_token_stream(
+        base_engine,
+        offsets,
+        u8_nfa.num_capture_groups(),
+    );
     return quote! {
         ::ere_core::__construct_regex(#fn_pair)
     }

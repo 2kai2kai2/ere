@@ -102,6 +102,35 @@ pub fn compile_regex_u8onepass(stream: TokenStream) -> TokenStream {
     return ere_core::__compile_regex_engine_one_pass_u8(stream);
 }
 
+/// Checks and compiles a regular expression into a [`ere_core::Regex<N>`] with the [`ere_core::fixed_offset`] engine.
+/// Unless you specifically want this engine, you might want to use [`compile_regex!`] instead.
+///
+/// This compilation happens during build using proc macros,
+/// resulting in rust code equivalent to your regex.
+/// This code can then by further optimized by rustc/llvm when compiled directly into the binary.
+///
+/// The generic `const N: usize` will be the number of capture groups present in the regular expression
+/// (including capture group 0 which is the entire matched text).
+/// You will need to properly specify this in the generics for the regex (default if unspecified is 1).
+/// When using [`Regex<N>::exec`](`ere_core::Regex<N>::exec`), this is the length of the captures returned.
+///
+/// ```
+/// use ere_core::Regex;
+/// use ere_macros::compile_regex_fixed_offset;
+///
+/// const MY_REGEX: Regex<2> = compile_regex_fixed_offset!("^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$");
+/// ```
+///
+/// ---
+///
+/// Note that this engine does not support all valid regular expressions,
+/// and will raise a compile error if necessary..
+///
+#[proc_macro]
+pub fn compile_regex_fixed_offset(stream: TokenStream) -> TokenStream {
+    return ere_core::__compile_regex_engine_fixed_offset(stream);
+}
+
 /// EXPERIMENTAL: this attribute provides an alternate syntax with finer control for creating regexes.
 ///
 /// Compared with [`compile_regex!`], this allows the type system to know which capture groups
