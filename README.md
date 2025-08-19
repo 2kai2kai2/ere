@@ -1,3 +1,6 @@
+[![Crates.io Version](https://img.shields.io/crates/v/ere)](https://crates.io/crates/ere)
+[![docs.rs](https://img.shields.io/docsrs/ere)](https://docs.rs/ere/latest/ere/)
+
 This crate provides tools for compiling and using regular expressions.
 It is intended as a simple but compiler-checked version of the [`regex`](https://crates.io/crates/regex) crate, as it does regular expression compilation at compile-time, but only supports [POSIX Extended Regular Expressions](https://en.wikibooks.org/wiki/Regular_Expressions/POSIX-Extended_Regular_Expressions).
 
