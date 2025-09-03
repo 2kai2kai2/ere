@@ -62,6 +62,7 @@ fn pick_base_engine(
     simplified_tree::SimplifiedTreeNode,
     working_nfa::WorkingNFA,
     working_u8_nfa::U8NFA,
+    &'static str,
 ) {
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
@@ -78,37 +79,59 @@ fn pick_base_engine(
 
     let u8_nfa = working_u8_nfa::U8NFA::new(&nfa);
 
-    let base_engine = if let Some(engine) = one_pass_u8::serialize_one_pass_token_stream(&u8_nfa) {
-        engine
-    } else if is_ascii {
-        pike_vm_u8::serialize_pike_vm_token_stream(&u8_nfa)
-    } else {
-        pike_vm::serialize_pike_vm_token_stream(&nfa)
-    };
-    return (base_engine, tree, nfa, u8_nfa);
+    const ONE_PASS_U8_DESC: &str = "This regular expression is [one-pass](https://swtch.com/~rsc/regexp/regexp3.html#:~:text=Let%27s%20define%20a%20%E2%80%9Cone%2Dpass%20regular%20expression%E2%80%9D).
+This allows us to use an efficient [`::ere_core::one_pass_u8`] implementation.";
+    const PIKE_VM_U8_DESC: &str =
+        "Uses a general-case [`::ere_core::pike_vm_u8`] implementatation over `u8`s.";
+    const PIKE_VM_DESC: &str =
+        "Uses a general-case [`::ere_core::pike_vm`] implementatation over `char`s.";
+
+    let (base_engine, description) =
+        if let Some(engine) = one_pass_u8::serialize_one_pass_token_stream(&u8_nfa) {
+            (engine, ONE_PASS_U8_DESC)
+        } else if is_ascii {
+            (
+                pike_vm_u8::serialize_pike_vm_token_stream(&u8_nfa),
+                PIKE_VM_U8_DESC,
+            )
+        } else {
+            (pike_vm::serialize_pike_vm_token_stream(&nfa), PIKE_VM_DESC)
+        };
+    return (base_engine, tree, nfa, u8_nfa, description);
 }
 
 /// Tries to pick the best engine that doesn't rely on sub-engines.
 ///
 /// Returns a stream that evaluates to a pair `(test_fn, exec_fn)`
-fn pick_engine(ere: parse_tree::ERE) -> proc_macro2::TokenStream {
-    let (base_engine, _, _, u8_nfa) = pick_base_engine(ere);
+fn pick_engine(ere: parse_tree::ERE) -> (proc_macro2::TokenStream, String) {
+    let (base_engine, _, _, u8_nfa, base_description) = pick_base_engine(ere);
 
     // Consider nested engines
     if let Some(offsets) = fixed_offset::get_fixed_offsets(&u8_nfa) {
-        return fixed_offset::serialize_fixed_offset_token_stream(
+        let engine = fixed_offset::serialize_fixed_offset_token_stream(
             base_engine,
             offsets,
             u8_nfa.num_capture_groups(),
         );
+        return (
+            engine,
+            format!(
+                "This regular expression's capture groups are always at fixed offsets.
+Because of this, we can skip a complex `exec` implementation, and instead simply run `test` then index into the string.
+
+### Details on the `test` implementation:
+
+{base_description}"
+            ),
+        );
     };
-    return base_engine;
+    return (base_engine, base_description.to_string());
 }
 
 /// Tries to pick the best engine.
 pub fn __compile_regex(stream: TokenStream) -> TokenStream {
     let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
-    let fn_pair = pick_engine(ere);
+    let (fn_pair, _) = pick_engine(ere);
     return quote! {
         {
             ::ere_core::__construct_regex(#fn_pair)
@@ -170,7 +193,7 @@ Try using a different engine.",
 /// Will return a compiler error if regex was not fixed offset.
 pub fn __compile_regex_engine_fixed_offset(stream: TokenStream) -> TokenStream {
     let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
-    let (base_engine, _, _, u8_nfa) = pick_base_engine(ere);
+    let (base_engine, _, _, u8_nfa, _) = pick_base_engine(ere);
 
     let Some(offsets) = fixed_offset::get_fixed_offsets(&u8_nfa) else {
         return syn::parse::Error::new(
@@ -193,7 +216,13 @@ pub fn __compile_regex_engine_fixed_offset(stream: TokenStream) -> TokenStream {
 
 #[cfg(feature = "unstable-attr-regex")]
 pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let ere: parse_tree::ERE = syn::parse_macro_input!(attr);
+    let ere_litstr: syn::LitStr = syn::parse_macro_input!(attr);
+    let ere_str = ere_litstr.value();
+    let ere = match parse_tree::ERE::parse_str_syn(&ere_str, ere_litstr.span()) {
+        Ok(ere) => ere,
+        Err(compile_err) => return compile_err.into_compile_error().into(),
+    };
+
     let tree = simplified_tree::SimplifiedTreeNode::from(ere.clone());
     let nfa = working_nfa::WorkingNFA::new(&tree);
 
@@ -267,19 +296,37 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
         .collect();
 
     // TODO: is it possible to more naturally extract struct args as optional or not?
-    let fn_pair = pick_engine(ere);
+    let (fn_pair, description) = pick_engine(ere);
     let struct_name = regex_struct.ident;
 
+    let ere_display_doc = format!("`{ere_str}`");
+    let struct_name_link_doc = format!("[`{}`]", struct_name.to_string());
     let implementation = quote! {
         impl<'a> #struct_name<'a> {
             const ENGINE: (
                 fn(&str) -> bool,
                 fn(&'a str) -> ::core::option::Option<[::core::option::Option<&'a str>; #capture_groups]>,
             ) = #fn_pair;
+            /// Returns `true` if the regular expression
+            #[doc = #ere_display_doc]
+            /// matches the string.
+            /// Otherwise, returns `false`
+            ///
+            /// ## Implementation
+            #[doc = #description]
             #[inline]
             pub fn test(text: &str) -> bool {
                 return (Self::ENGINE.0)(text);
             }
+            /// Returns an instance of
+            #[doc = #struct_name_link_doc]
+            /// containing capture groups if
+            #[doc = #ere_display_doc]
+            /// matches the string.
+            /// Otherwise, returns `None`.
+            ///
+            /// ## Implementation
+            #[doc = #description]
             pub fn exec(text: &'a str) -> ::core::option::Option<#struct_name<'a>> {
                 let result: [::core::option::Option<&'a str>; #capture_groups] = (Self::ENGINE.1)(text)?;
                 return ::core::option::Option::<#struct_name<'a>>::Some(#struct_name(

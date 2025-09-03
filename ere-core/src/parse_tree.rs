@@ -65,17 +65,17 @@ impl ERE {
         };
         return Some(ere);
     }
+    pub(crate) fn parse_str_syn(string: &str, span: proc_macro2::Span) -> syn::Result<Self> {
+        return ERE::parse_str(&string).ok_or_else(|| {
+            syn::Error::new(span, "Failed to parse POSIX Extended Regex Expression")
+        });
+    }
 }
 impl syn::parse::Parse for ERE {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let literal: syn::LitStr = input.parse()?;
         let string = literal.value();
-        return ERE::parse_str(&string).ok_or_else(|| {
-            syn::Error::new(
-                literal.span(),
-                "Failed to parse POSIX Extended Regex Expression",
-            )
-        });
+        return ERE::parse_str_syn(&string, literal.span());
     }
 }
 impl Display for ERE {
