@@ -650,6 +650,7 @@ impl BracketCharClass {
             "alnum:]" => BracketCharClass::Alphanumeric,
             "cntrl:]" => BracketCharClass::Control,
             "lower:]" => BracketCharClass::Lower,
+            "space:]" => BracketCharClass::Space,
             "alpha:]" => BracketCharClass::Alphabet,
             "digit:]" => BracketCharClass::Digit,
             "print:]" => BracketCharClass::Print,
