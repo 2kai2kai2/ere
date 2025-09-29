@@ -348,6 +348,67 @@ fn find_quoted() {
 }
 
 #[test]
+fn find_discord_emoji() {
+    const REGEXES: [Regex; 2] = [
+        compile_regex_pikevm!(":[[:alnum:]_]{2,}:"),
+        compile_regex_u8pikevm!(":[[:alnum:]_]{2,}:"),
+    ];
+    for regex in &REGEXES {
+        assert_match!(regex, ":crab:", [Some(":crab:")]);
+        assert_match!(regex, "this crate is fire :fire:", [Some(":fire:")]);
+        assert_match!(
+            regex,
+            ":regional_indicator_e::regional_indicator_r::regional_indicator_e:",
+            [Some(":regional_indicator_e:")],
+        );
+        assert_match!(regex, "writing :pencil2:", [Some(":pencil2:")],);
+
+        assert_nomatch!(
+            regex,
+            "without emojis",
+            "unended :emoji",
+            "emoji is unstarted:",
+            "turbofish::<>",
+            "single char :a:",
+            ":with-dash:",
+            "this is a noun: apple\nthis is a verb: jump"
+        );
+    }
+}
+
+#[test]
+fn html_comment() {
+    const REGEXES: [Regex; 2] = [
+        compile_regex_pikevm!("<!--.*?-->"),
+        compile_regex_u8pikevm!("<!--.*?-->"),
+    ];
+    for regex in &REGEXES {
+        assert_match!(regex, "<!---->", [Some("<!---->")]);
+        assert_match!(regex, "<!-- comment -->", [Some("<!-- comment -->")]);
+        assert_match!(
+            regex,
+            "<div><!-- comment --></div>",
+            [Some("<!-- comment -->")]
+        );
+        assert_match!(
+            regex,
+            "<div><!-- comment -->--></div>",
+            [Some("<!-- comment -->")]
+        );
+        assert_match!(
+            regex,
+            "<div><!--<!-- comment -->--></div>",
+            [Some("<!--<!-- comment -->")]
+        );
+        assert_match!(
+            regex,
+            "<!--<!-- comment -->-->",
+            [Some("<!--<!-- comment -->")]
+        );
+    }
+}
+
+#[test]
 fn html_link_extract() {
     // a very gross regex, but isn't really a task I'd use a regex for anyway.
     // multiline is just for formatting, is ignored using `\`
@@ -511,6 +572,61 @@ fn http_request() {
             "GET / HTTP/1.1\n\nwithout carriage return",
             "first GET / HTTP/1.1\r\n\r\npreceded",
             "OPTION /invalid url HTTP/1.1\r\n\r\nbody",
+        );
+    }
+}
+
+#[test]
+fn uri_with_authority() {
+    const REGEXES: [Regex<5>; 3] = [
+        compile_regex_pikevm!(r"^([[:alpha:]][[:alnum:]-+.]+)://([^?#]+)([?][^#]*)?(#[^#]*)?$"),
+        compile_regex_u8pikevm!(r"^([[:alpha:]][[:alnum:]-+.]+)://([^?#]+)([?][^#]*)?(#[^#]*)?$"),
+        compile_regex_u8onepass!(r"^([[:alpha:]][[:alnum:]-+.]+)://([^?#]+)([?][^#]*)?(#[^#]*)?$"),
+    ];
+    for regex in &REGEXES {
+        assert_match!(
+            regex,
+            "https://example.com",
+            [
+                Some("https://example.com"),
+                Some("https"),
+                Some("example.com"),
+                None,
+                None
+            ]
+        );
+        assert_match!(
+            regex,
+            "https://subdomain.example.com/category/page2",
+            [
+                Some("https://subdomain.example.com/category/page2"),
+                Some("https"),
+                Some("subdomain.example.com/category/page2"),
+                None,
+                None
+            ]
+        );
+        assert_match!(
+            regex,
+            "https://subdomain.example.com/category/page2?query=1234",
+            [
+                Some("https://subdomain.example.com/category/page2?query=1234"),
+                Some("https"),
+                Some("subdomain.example.com/category/page2"),
+                Some("?query=1234"),
+                None
+            ]
+        );
+        assert_match!(
+            regex,
+            "https://subdomain.example.com/category/page2?query=1234#fragment",
+            [
+                Some("https://subdomain.example.com/category/page2?query=1234#fragment"),
+                Some("https"),
+                Some("subdomain.example.com/category/page2"),
+                Some("?query=1234"),
+                Some("#fragment")
+            ]
         );
     }
 }
