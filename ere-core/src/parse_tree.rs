@@ -39,35 +39,65 @@ macro_rules! match_prefix {
     };
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum RegexParseError {
+    /// A capture group (e.g. `(abc)`) was unterminated
+    #[error("A capture group is not properly terminated.")]
+    UnterminatedCaptureGroup,
+    /// A character class set (e.g. `[a-z]`) was unterminated
+    #[error("A character class set is not properly terminated.")]
+    UnterminatedCharSet,
+    /// An escaped symbol was invalid.
+    #[error("An unknown regex escape (not rust string escape) was found: `\\{0}`.")]
+    InvalidEscapedChar(char),
+    #[error("An atom was expected but was invalid due to being a special character: `{0}`.")]
+    InvalidAtom(char),
+    /// Should only happen in debug settings, since it happens only when we call `Atom::take("")`
+    #[error("An atom was expected but was not found due to the end of the string.")]
+    UnexpectedEOF,
+}
+
 /// A represents a [POSIX-compliant ERE](https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html).
 /// Primarily intended for use as a parser.
 #[derive(Clone)]
-pub struct ERE(pub(crate) Vec<EREBranch>);
+pub struct ERE(
+    /// Should always have at least one branch, even if it is empty.
+    pub(crate) Vec<EREBranch>,
+);
 impl ERE {
-    fn take<'a>(rest: &'a str) -> Option<(&'a str, ERE)> {
+    /// Goes until a non-nested `)` or the end of the string (does not consume).
+    fn take<'a>(rest: &'a str) -> Result<(&'a str, ERE), RegexParseError> {
         let mut branches = Vec::new();
         let (mut rest, branch) = EREBranch::take(rest)?;
         branches.push(branch);
-        while let Some(new_rest) = rest.strip_prefix('|') {
-            rest = new_rest;
-            let Some((new_rest, branch)) = EREBranch::take(rest) else {
+        loop {
+            if rest.is_empty() || rest.starts_with(')') {
+                break;
+            }
+            let Some(branch_start) = rest.strip_prefix('|') else {
                 break;
             };
+            let (new_rest, branch) = EREBranch::take(branch_start)?;
             rest = new_rest;
             branches.push(branch);
         }
-        return Some((rest, ERE(branches)));
+        return Ok((rest, ERE(branches)));
     }
 
-    pub fn parse_str(input: &str) -> Option<Self> {
-        let Some(("", ere)) = ERE::take(&input) else {
-            return None;
+    pub fn parse_str(input: &str) -> Result<Self, RegexParseError> {
+        let Ok(("", ere)) = ERE::take(&input) else {
+            // The only reason we would have `rest` left over is if
+            // we hit a ')'. Since there is no opening '(', this is treated as an invalid atom.
+            return Err(RegexParseError::InvalidAtom(')'));
         };
-        return Some(ere);
+        return Ok(ere);
     }
     pub(crate) fn parse_str_syn(string: &str, span: proc_macro2::Span) -> syn::Result<Self> {
-        return ERE::parse_str(&string).ok_or_else(|| {
-            syn::Error::new(span, "Failed to parse POSIX Extended Regex Expression")
+        return ERE::parse_str(&string).map_err(|err| {
+            syn::Error::new(
+                span,
+                format_args!("While parsing regular expression:\n{err}"),
+            )
         });
     }
 }
@@ -93,17 +123,26 @@ impl Display for ERE {
 }
 
 #[derive(Clone)]
-pub(crate) struct EREBranch(pub(crate) Vec<EREPart>);
+pub(crate) struct EREBranch(
+    /// May be empty.
+    pub(crate) Vec<EREPart>,
+);
 impl EREBranch {
-    fn take<'a>(rest: &'a str) -> Option<(&'a str, EREBranch)> {
+    /// May be empty.
+    /// If it is passed `")"` it will return `Ok((")", EREBranch(vec![]))`,
+    /// so end of group should be checked before taking a branch.
+    ///
+    /// ## Returns
+    /// - `Ok((rest, branch))` if we successfully found a branch
+    /// - `Err(err)` if parsing failed (probably an invalid regex)
+    fn take<'a>(mut rest: &'a str) -> Result<(&'a str, EREBranch), RegexParseError> {
         let mut parts = Vec::new();
-        let (mut rest, part) = EREPart::take(rest)?;
-        parts.push(part);
-        while let Some((new_rest, part)) = EREPart::take(rest) {
+        while !rest.is_empty() && !rest.starts_with(')') && !rest.starts_with('|') {
+            let (new_rest, part) = EREPart::take(rest)?;
             rest = new_rest;
             parts.push(part);
         }
-        return Some((rest, EREBranch(parts)));
+        return Ok((rest, EREBranch(parts)));
     }
 }
 impl Display for EREBranch {
@@ -123,16 +162,18 @@ pub(crate) enum EREPart {
     End,
 }
 impl EREPart {
-    fn take<'a>(rest: &'a str) -> Option<(&'a str, EREPart)> {
+    fn take<'a>(rest: &'a str) -> Result<(&'a str, EREPart), RegexParseError> {
         if let Some(rest) = rest.strip_prefix('^') {
-            return Some((rest, EREPart::Start));
+            return Ok((rest, EREPart::Start));
         } else if let Some(rest) = rest.strip_prefix('$') {
-            return Some((rest, EREPart::End));
+            return Ok((rest, EREPart::End));
         }
 
         let (rest, expr) = if let Some(rest) = rest.strip_prefix('(') {
             let (rest, ere) = ERE::take(rest)?;
-            let rest = rest.strip_prefix(')')?;
+            let Some(rest) = rest.strip_prefix(')') else {
+                return Err(RegexParseError::UnterminatedCaptureGroup);
+            };
             (rest, EREExpression::Subexpression(ere))
         } else {
             let (rest, atom) = Atom::take(rest)?;
@@ -143,7 +184,7 @@ impl EREPart {
             Some((rest, quantifier)) => (rest, EREPart::Quantified(expr, quantifier)),
             None => (rest, EREPart::Single(expr)),
         };
-        return Some(part);
+        return Ok(part);
     }
 }
 impl Display for EREPart {
@@ -352,7 +393,7 @@ impl std::str::FromStr for Atom {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let Some(("", atom)) = Atom::take(s) else {
+        let Ok(("", atom)) = Atom::take(s) else {
             return Err(());
         };
         return Ok(atom);
@@ -360,16 +401,18 @@ impl std::str::FromStr for Atom {
 }
 
 impl Atom {
-    fn take<'a>(rest: &'a str) -> Option<(&'a str, Atom)> {
+    /// ## Returns
+    /// - `Ok((rest, atom))` if an atom was successfully found at the start
+    /// - `Err(err)` if the input does not start with a valid atom.
+    fn take<'a>(rest: &'a str) -> Result<(&'a str, Atom), RegexParseError> {
         let mut it = rest.chars();
-        match it.next() {
+        return match it.next() {
             Some('\\') => match it.next() {
-                Some(c) if is_escapable_character(c) => {
-                    return Some((it.as_str(), Atom::NormalChar(c)))
-                }
-                _ => return None,
+                Some(c) if is_escapable_character(c) => Ok((it.as_str(), Atom::NormalChar(c))),
+                Some(c) => Err(RegexParseError::InvalidEscapedChar(c)),
+                None => Err(RegexParseError::InvalidAtom('\\')),
             },
-            Some('.') => return Some((it.as_str(), CharClass::Dot.into())),
+            Some('.') => Ok((it.as_str(), CharClass::Dot.into())),
             Some('[') => {
                 let mut rest = it.as_str();
                 let mut items = Vec::new();
@@ -395,10 +438,10 @@ impl Atom {
                     } else {
                         // Normal
                         let mut it = rest.chars();
-                        let first = it.next()?;
+                        let first = it.next().ok_or(RegexParseError::UnterminatedCharSet)?;
                         rest = it.as_str();
-                        if let '-' = it.next()? {
-                            let second = it.next()?;
+                        if let '-' = it.next().ok_or(RegexParseError::UnterminatedCharSet)? {
+                            let second = it.next().ok_or(RegexParseError::UnterminatedCharSet)?;
                             rest = it.as_str();
                             if second == ']' {
                                 // it's just two characters at the end
@@ -416,14 +459,15 @@ impl Atom {
                 }
 
                 if none_of {
-                    return Some((rest, Atom::NonmatchingList(items)));
+                    return Ok((rest, Atom::NonmatchingList(items)));
                 } else {
-                    return Some((rest, Atom::MatchingList(items)));
+                    return Ok((rest, Atom::MatchingList(items)));
                 }
             }
-            Some(c) if !is_special_character(c) => return Some((it.as_str(), Atom::NormalChar(c))),
-            None | Some(_) => return None,
-        }
+            Some(c) if !is_special_character(c) => Ok((it.as_str(), Atom::NormalChar(c))),
+            Some(c) => Err(RegexParseError::InvalidAtom(c)),
+            None => Err(RegexParseError::UnexpectedEOF),
+        };
     }
     pub fn check(&self, c: char) -> bool {
         return match self {
@@ -812,7 +856,10 @@ mod tests {
     #[test]
     fn reconstruction() {
         fn test_reconstruction(text: &str) {
-            let (rest, ere) = ERE::take(text).unwrap();
+            let (rest, ere) = match ERE::take(text) {
+                Ok(ok) => ok,
+                Err(err) => panic!("Failed to parse `{text}`, got error: {err}"),
+            };
             assert!(rest.is_empty(), "{text} did not get used (left {rest})");
             let reconstructed = ere.to_string();
             assert_eq!(text, &reconstructed);
@@ -875,29 +922,26 @@ mod tests {
 
     #[test]
     fn parse_atom_simple() {
-        assert_eq!(Atom::take("a"), Some(("", Atom::NormalChar('a'))));
-        assert_eq!(Atom::take(r"abcd"), Some(("bcd", Atom::NormalChar('a'))));
-        assert_eq!(Atom::take(r"\\"), Some(("", Atom::NormalChar('\\'))));
+        assert_eq!(Atom::take("a"), Ok(("", Atom::NormalChar('a'))));
+        assert_eq!(Atom::take(r"abcd"), Ok(("bcd", Atom::NormalChar('a'))));
+        assert_eq!(Atom::take(r"\\"), Ok(("", Atom::NormalChar('\\'))));
         assert_eq!(
             Atom::take(r"\[asdf\]"),
-            Some((r"asdf\]", Atom::NormalChar('[')))
+            Ok((r"asdf\]", Atom::NormalChar('[')))
         );
-        assert_eq!(Atom::take(r"\."), Some(("", Atom::NormalChar('.'))));
-        assert_eq!(Atom::take(r" "), Some(("", Atom::NormalChar(' '))));
-        assert_eq!(Atom::take(r"\"), None);
+        assert_eq!(Atom::take(r"\."), Ok(("", Atom::NormalChar('.'))));
+        assert_eq!(Atom::take(r" "), Ok(("", Atom::NormalChar(' '))));
+        assert_eq!(Atom::take(r"\"), Err(RegexParseError::InvalidAtom('\\')));
 
-        assert_eq!(Atom::take("."), Some(("", Atom::CharClass(CharClass::Dot))));
-        assert_eq!(
-            Atom::take(".."),
-            Some((".", Atom::CharClass(CharClass::Dot)))
-        );
+        assert_eq!(Atom::take("."), Ok(("", Atom::CharClass(CharClass::Dot))));
+        assert_eq!(Atom::take(".."), Ok((".", Atom::CharClass(CharClass::Dot))));
     }
 
     #[test]
     fn parse_atom_brackets() {
         assert_eq!(
             Atom::take("[ab]"),
-            Some((
+            Ok((
                 "",
                 Atom::MatchingList(vec![
                     BracketExpressionTerm::Single('a'),
@@ -907,7 +951,7 @@ mod tests {
         );
         assert_eq!(
             Atom::take("[]ab]"),
-            Some((
+            Ok((
                 "",
                 Atom::MatchingList(vec![
                     BracketExpressionTerm::Single(']'),
@@ -918,7 +962,7 @@ mod tests {
         );
         assert_eq!(
             Atom::take("[]ab-]"),
-            Some((
+            Ok((
                 "",
                 Atom::MatchingList(vec![
                     BracketExpressionTerm::Single(']'),
@@ -931,7 +975,7 @@ mod tests {
 
         assert_eq!(
             Atom::take("[]a-y]"),
-            Some((
+            Ok((
                 "",
                 Atom::MatchingList(vec![
                     BracketExpressionTerm::Single(']'),
@@ -941,7 +985,7 @@ mod tests {
         );
         assert_eq!(
             Atom::take("[]+--]"),
-            Some((
+            Ok((
                 "",
                 Atom::MatchingList(vec![
                     BracketExpressionTerm::Single(']'),
@@ -952,7 +996,7 @@ mod tests {
 
         assert_eq!(
             Atom::take("[^]a-y]"),
-            Some((
+            Ok((
                 "",
                 Atom::NonmatchingList(vec![
                     BracketExpressionTerm::Single(']'),
@@ -962,13 +1006,23 @@ mod tests {
         );
         assert_eq!(
             Atom::take("[^]+--]"),
-            Some((
+            Ok((
                 "",
                 Atom::NonmatchingList(vec![
                     BracketExpressionTerm::Single(']'),
                     BracketExpressionTerm::Range('+', '-'),
                 ])
             ))
+        );
+    }
+
+    #[test]
+    fn parse_atom_err() {
+        assert_eq!(Atom::take(")"), Err(RegexParseError::InvalidAtom(')')));
+        assert_eq!(Atom::take(r"\"), Err(RegexParseError::InvalidAtom('\\')));
+        assert_eq!(
+            Atom::take(r"\a"),
+            Err(RegexParseError::InvalidEscapedChar('a'))
         );
     }
 
