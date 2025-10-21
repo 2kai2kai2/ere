@@ -1,5 +1,5 @@
 [workspace]
-members = ["ere-core", "ere-macros"]
+members = ["ere-core", "ere-benchmarks", "ere-macros"]
 resolver = "2"
 
 [package]

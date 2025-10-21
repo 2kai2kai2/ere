@@ -15,20 +15,18 @@ pub enum EpsilonType {
 impl ToTokens for EpsilonType {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            EpsilonType::None => {
-                tokens.extend(quote! { ::ere_core::working_nfa::EpsilonType::None })
-            }
+            EpsilonType::None => tokens.extend(quote! { ::ere::working_nfa::EpsilonType::None }),
             EpsilonType::StartAnchor => {
-                tokens.extend(quote! { ::ere_core::working_nfa::EpsilonType::StartAnchor })
+                tokens.extend(quote! { ::ere::working_nfa::EpsilonType::StartAnchor })
             }
             EpsilonType::EndAnchor => {
-                tokens.extend(quote! { ::ere_core::working_nfa::EpsilonType::EndAnchor })
+                tokens.extend(quote! { ::ere::working_nfa::EpsilonType::EndAnchor })
             }
             EpsilonType::StartCapture(group_num) => tokens.extend(quote! {
-                ::ere_core::working_nfa::EpsilonType::StartCapture(#group_num)
+                ::ere::working_nfa::EpsilonType::StartCapture(#group_num)
             }),
             EpsilonType::EndCapture(group_num) => tokens.extend(quote! {
-                ::ere_core::working_nfa::EpsilonType::EndCapture(#group_num)
+                ::ere::working_nfa::EpsilonType::EndCapture(#group_num)
             }),
         };
     }

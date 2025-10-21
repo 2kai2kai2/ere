@@ -80,11 +80,11 @@ fn pick_base_engine(
     let u8_nfa = working_u8_nfa::U8NFA::new(&nfa);
 
     const ONE_PASS_U8_DESC: &str = "This regular expression is [one-pass](https://swtch.com/~rsc/regexp/regexp3.html#:~:text=Let%27s%20define%20a%20%E2%80%9Cone%2Dpass%20regular%20expression%E2%80%9D).
-This allows us to use an efficient [`::ere_core::one_pass_u8`] implementation.";
+This allows us to use an efficient [`::ere::one_pass_u8`] implementation.";
     const PIKE_VM_U8_DESC: &str =
-        "Uses a general-case [`::ere_core::pike_vm_u8`] implementatation over `u8`s.";
+        "Uses a general-case [`::ere::pike_vm_u8`] implementatation over `u8`s.";
     const PIKE_VM_DESC: &str =
-        "Uses a general-case [`::ere_core::pike_vm`] implementatation over `char`s.";
+        "Uses a general-case [`::ere::pike_vm`] implementatation over `char`s.";
 
     let (base_engine, description) =
         if let Some(engine) = one_pass_u8::serialize_one_pass_token_stream(&u8_nfa) {
@@ -134,7 +134,7 @@ pub fn __compile_regex(stream: TokenStream) -> TokenStream {
     let (fn_pair, _) = pick_engine(ere);
     return quote! {
         {
-            ::ere_core::__construct_regex(#fn_pair)
+            ::ere::__construct_regex(#fn_pair)
         }
     }
     .into();
@@ -147,7 +147,7 @@ pub fn __compile_regex_engine_pike_vm(stream: TokenStream) -> TokenStream {
     let nfa = working_nfa::WorkingNFA::new(&tree);
     let fn_pair = pike_vm::serialize_pike_vm_token_stream(&nfa);
     return quote! {
-        ::ere_core::__construct_regex(#fn_pair)
+        ::ere::__construct_regex(#fn_pair)
     }
     .into();
 }
@@ -160,7 +160,7 @@ pub fn __compile_regex_engine_pike_vm_u8(stream: TokenStream) -> TokenStream {
     let nfa = working_u8_nfa::U8NFA::new(&nfa);
     let fn_pair = pike_vm_u8::serialize_pike_vm_token_stream(&nfa);
     return quote! {
-        ::ere_core::__construct_regex(#fn_pair)
+        ::ere::__construct_regex(#fn_pair)
     }
     .into();
 }
@@ -183,7 +183,7 @@ Try using a different engine.",
         .into();
     };
     return quote! {
-        ::ere_core::__construct_regex(#fn_pair)
+        ::ere::__construct_regex(#fn_pair)
     }
     .into();
 }
@@ -209,7 +209,7 @@ pub fn __compile_regex_engine_fixed_offset(stream: TokenStream) -> TokenStream {
         u8_nfa.num_capture_groups(),
     );
     return quote! {
-        ::ere_core::__construct_regex(#fn_pair)
+        ::ere::__construct_regex(#fn_pair)
     }
     .into();
 }

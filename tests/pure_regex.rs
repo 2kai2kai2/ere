@@ -665,4 +665,9 @@ fn greedy() {
 
     const REGEX8: Regex<1> = compile_regex!(r"a??");
     assert_match!(REGEX8, "abaaabaaaa", [Some("")]);
+
+    const REGEX9: Regex<3> = compile_regex!("()^a|()c");
+    assert_match!(REGEX9, "a", [Some("a"), Some(""), None]);
+    assert_match!(REGEX9, "c", [Some("c"), None, Some("")]);
+    assert_match!(REGEX9, "bc", [Some("c"), None, Some("")]);
 }

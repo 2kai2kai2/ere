@@ -101,7 +101,7 @@ fn serialize_pike_vm_symbol_propogation(
                 let symbol = #symbol;
                 if symbol.check(c) {
                     out.push(
-                        ::ere_core::pike_vm::PikeVMThread {
+                        ::ere::pike_vm::PikeVMThread {
                             state: VMStates::#to_label,
                             captures: thread.captures.clone(),
                         },
@@ -161,10 +161,10 @@ fn serialize_pike_vm_symbol_propogation(
     };
     let transition_symbols_exec = quote! {
         fn transition_symbols_exec(
-            threads: &[::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>],
+            threads: &[::ere::pike_vm::PikeVMThread<#capture_groups, VMStates>],
             c: char,
-        ) -> ::std::vec::Vec<::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>> {
-            let mut out = ::std::vec::Vec::<::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>>::new();
+        ) -> ::std::vec::Vec<::ere::pike_vm::PikeVMThread<#capture_groups, VMStates>> {
+            let mut out = ::std::vec::Vec::<::ere::pike_vm::PikeVMThread<#capture_groups, VMStates>>::new();
             for thread in threads {
                 match thread.state {
                     #transition_symbols_defs_exec
@@ -381,14 +381,14 @@ fn serialize_pike_vm_epsilon_propogation(
     };
     let transition_epsilons_exec = quote! {
         fn transition_epsilons_exec(
-            threads: &[::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>],
+            threads: &[::ere::pike_vm::PikeVMThread<#capture_groups, VMStates>],
             idx: usize,
             len: usize,
-        ) -> ::std::vec::Vec<::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>> {
+        ) -> ::std::vec::Vec<::ere::pike_vm::PikeVMThread<#capture_groups, VMStates>> {
             let is_start = idx == 0;
             let is_end = idx == len;
             let mut occupied_states = ::std::vec![false; #num_states];
-            let mut out = ::std::vec::Vec::<::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>>::new();
+            let mut out = ::std::vec::Vec::<::ere::pike_vm::PikeVMThread<#capture_groups, VMStates>>::new();
             for thread in threads {
                 match thread.state {
                     #transition_epsilons_exec
@@ -455,8 +455,8 @@ pub(crate) fn serialize_pike_vm_token_stream(nfa: &WorkingNFA) -> proc_macro2::T
             return list[#state_count - 1];
         }
         fn exec<'a>(text: &'a str) -> Option<[Option<&'a str>; #capture_groups]> {
-            let mut threads = ::std::vec::Vec::<::ere_core::pike_vm::PikeVMThread<#capture_groups, VMStates>>::new();
-            threads.push(::ere_core::pike_vm::PikeVMThread {
+            let mut threads = ::std::vec::Vec::<::ere::pike_vm::PikeVMThread<#capture_groups, VMStates>>::new();
+            threads.push(::ere::pike_vm::PikeVMThread {
                 state: VMStates::State0,
                 captures: [(usize::MAX, usize::MAX); #capture_groups],
             });

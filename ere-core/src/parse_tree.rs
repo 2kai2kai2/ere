@@ -349,7 +349,7 @@ impl Display for CharClass {
 impl ToTokens for CharClass {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
-            CharClass::Dot => tokens.extend(quote! {::ere_core::parse_tree::CharClass::Dot}),
+            CharClass::Dot => tokens.extend(quote! {::ere::parse_tree::CharClass::Dot}),
         }
     }
 }
@@ -728,40 +728,40 @@ impl ToTokens for BracketCharClass {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
             BracketCharClass::Alphanumeric => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Alphanumeric})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::Alphanumeric})
             }
             BracketCharClass::Control => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Control})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::Control})
             }
             BracketCharClass::Lower => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Lower})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::Lower})
             }
             BracketCharClass::Space => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Space})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::Space})
             }
             BracketCharClass::Alphabet => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Alphabet})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::Alphabet})
             }
             BracketCharClass::Digit => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Digit})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::Digit})
             }
             BracketCharClass::Print => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Print})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::Print})
             }
             BracketCharClass::Upper => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Upper})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::Upper})
             }
             BracketCharClass::Blank => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Blank})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::Blank})
             }
             BracketCharClass::Graphic => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Graph})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::Graph})
             }
             BracketCharClass::Punctuation => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::Punctuation})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::Punctuation})
             }
             BracketCharClass::HexDigit => {
-                tokens.extend(quote! {::ere_core::parse_tree::BracketCharClass::XDigit})
+                tokens.extend(quote! {::ere::parse_tree::BracketCharClass::XDigit})
             }
         }
     }
@@ -814,13 +814,13 @@ impl ToTokens for BracketExpressionTerm {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         tokens.extend(match self {
             BracketExpressionTerm::Single(c) => quote! {
-                ::ere_core::parse_tree::BracketExpressionTerm::Single(#c)
+                ::ere::parse_tree::BracketExpressionTerm::Single(#c)
             },
             BracketExpressionTerm::Range(a, z) => quote! {
-                ::ere_core::parse_tree::BracketExpressionTerm::Range(#a, #z)
+                ::ere::parse_tree::BracketExpressionTerm::Range(#a, #z)
             },
             BracketExpressionTerm::CharClass(char_class) => quote! {
-                ::ere_core::parse_tree::BracketExpressionTerm::CharClass(#char_class)
+                ::ere::parse_tree::BracketExpressionTerm::CharClass(#char_class)
             },
         });
     }
