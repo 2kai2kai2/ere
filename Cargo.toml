@@ -1,5 +1,5 @@
 [workspace]
-members = ["ere-core", "ere-benchmarks", "ere-macros"]
+members = ["ere-core", "ere-macros"]
 resolver = "2"
 
 [package]
@@ -17,8 +17,17 @@ repository = "https://github.com/2kai2kai2/ere"
 ere-core = { version = "0.2.2", path = "./ere-core" }
 ere-macros = { version = "0.2.2", path = "./ere-macros" }
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
+regex = { version = "1.12.2" }                                       # for benchmark comparison
+
 [features]
 unstable-attr-regex = [
     "ere-core/unstable-attr-regex",
     "ere-macros/unstable-attr-regex",
 ]
+
+[[bench]]
+name = "ere_benchmark"
+harness = false        # use criterion
