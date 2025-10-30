@@ -139,7 +139,10 @@ pub(crate) fn serialize_one_pass_token_stream(nfa: &U8NFA) -> Option<TokenStream
 
     // == codegen ==
     if let Some(_) = nfa.topological_ordering() {
-        // There are no loops in this NFA so we can avoid excessively deep recursion.
+        // There are no loops in this NFA so we can confidently avoid unbounded recursion
+        // (plus with the DAG, the state functions seem to get inlined,
+        // but with loops it is inconsistent and sometimes produces two inlined copies
+        // of the remaining path when it should be converging).
         // Production compiler optimization (i.e. except opt level 0) should minimize all other
         // internal function calls
         return Some(codegen_functional(
@@ -149,6 +152,8 @@ pub(crate) fn serialize_one_pass_token_stream(nfa: &U8NFA) -> Option<TokenStream
             accept_transitions,
         ));
     } else {
+        // once [`explicit_tail_calls`](https://github.com/rust-lang/rust/issues/112788) is stable,
+        // we can add it to [`codegen_functional`] and remove [`codegen_vmlike`].
         return Some(codegen_vmlike(
             nfa,
             num_captures,
@@ -156,6 +161,12 @@ pub(crate) fn serialize_one_pass_token_stream(nfa: &U8NFA) -> Option<TokenStream
             accept_transitions,
         ));
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
+enum Tag {
+    StartCapture(usize),
+    EndCapture(usize),
 }
 
 /// Represents a sequence of states that are passed through without
@@ -171,6 +182,8 @@ pub(crate) fn serialize_one_pass_token_stream(nfa: &U8NFA) -> Option<TokenStream
 struct Run {
     start_state: usize,
     symbols: Vec<std::ops::RangeInclusive<u8>>,
+    /// `(offset, tag)` where `offset == 0` would refer to the location of the first matched symbol
+    tags: Vec<(usize, Tag)>,
     end_state: usize,
 }
 /// How a state is included in a run (if any).
@@ -210,31 +223,34 @@ fn compute_runs(
         }
     }
 
-    // TODO: allow captures within a run (would just apply them afterward based on offset)
     let run_next: Vec<_> = symbol_transitions
         .iter()
         .map(|state_transitions| {
             let &[(range, update)] = &state_transitions.as_slice() else {
                 return None;
             };
-            if update.end_only
-                || update.start_only
-                || update
-                    .update_captures
-                    .iter()
-                    .any(|(start, end)| *start || *end)
-                || incoming_count[update.state] != 1
-            {
+            if update.end_only || update.start_only || incoming_count[update.state] != 1 {
                 return None;
             }
-            return Some((update.state, range));
+            let tags: Vec<_> = update
+                .update_captures
+                .iter()
+                .enumerate()
+                .flat_map(|(i, set_tags)| match set_tags {
+                    (false, false) => Vec::new(),
+                    (true, false) => vec![Tag::StartCapture(i)],
+                    (false, true) => vec![Tag::EndCapture(i)],
+                    (true, true) => vec![Tag::StartCapture(i), Tag::EndCapture(i)],
+                })
+                .collect();
+            return Some((update.state, range, tags));
         })
         .collect();
 
     // Whether a run starts at this state.
     let mut run_start: Vec<bool> = run_next.iter().map(Option::is_some).collect();
     for next in &run_next {
-        if let Some((next, _)) = next {
+        if let Some((next, _, _)) = next {
             run_start[*next] = false;
         }
     }
@@ -246,19 +262,24 @@ fn compute_runs(
         }
 
         let mut symbols = Vec::new();
+        let mut tags = Vec::new();
         let mut internal = Vec::new(); // also may include end
         let mut state = start_state;
-        while let Some(Some((next, range))) = run_next.get(state) {
+        while let Some(Some((next, range, transition_tags))) = run_next.get(state) {
             if *next == start_state {
                 // should never happen since this would be a disconnected part of the NFA
                 // that is a single loop with no incoming/outgoing transitions
                 // but just in case, we do this check.
                 break;
             }
+            for tag in transition_tags {
+                tags.push((symbols.len(), tag.clone()));
+            }
             symbols.push((*range).clone());
             internal.push(*next);
             state = *next;
         }
+        tags.sort();
 
         if state == start_state {
             // Shouldn't happen because it means a loop was allowed or it was an invalid start state,
@@ -268,6 +289,7 @@ fn compute_runs(
         out[start_state] = StateRunInclusion::Start(Run {
             start_state,
             symbols,
+            tags,
             end_state: state,
         });
         for internal_state in internal {
@@ -631,8 +653,65 @@ fn codegen_functional(
             .collect();
     }
 
-    let make_exec_func = |i: usize| {
+    let make_exec_func = |(i, run): (usize, Option<&Run>)| {
         let fn_ident = &fn_idents[i];
+
+        if let Some(run) = run {
+            debug_assert_eq!(run.start_state, i);
+            // It's a run so handle special case.
+            // TODO: use explicit simd instructions. Currently we just hope LLVM vectorizes.
+            let run_length = run.symbols.len();
+
+            let new_state_fn_ident = &fn_idents[run.end_state];
+
+            // TODO: make sure the non-branching path isn't *too* long
+            let conditions: proc_macro2::TokenStream = run
+                .symbols
+                .iter()
+                .enumerate()
+                .map(|(i, range)| {
+                    let lower = range.start();
+                    let upper = range.end();
+                    return quote! {
+                        (#lower <= run_part[#i]) & (run_part[#i] <= #upper) &
+                    };
+                })
+                .collect();
+
+            let apply_tags: proc_macro2::TokenStream = run
+                .tags
+                .iter()
+                .map(|(offset, tag)| match tag {
+                    Tag::StartCapture(capture_idx) => {
+                        quote! { captures[#capture_idx].0 = #offset + byte_idx; }
+                    }
+                    Tag::EndCapture(capture_idx) => {
+                        quote! { captures[#capture_idx].1 = #offset + byte_idx; }
+                    }
+                })
+                .collect();
+
+            return quote! {
+                fn #fn_ident<'a>(
+                    mut bytes: ::core::slice::Iter<'a, u8>,
+                    byte_idx: usize,
+                    mut captures: [(usize, usize); #num_captures],
+                    start: bool,
+                ) -> Option<[(usize, usize); #num_captures]> {
+                    let ::core::option::Option::Some((run_part, rest)) = bytes.as_slice().split_at_checked(#run_length) else {
+                        return ::core::option::Option::None;
+                    };
+                    let result = #conditions true;
+                    if !result {
+                        return ::core::option::Option::None;
+                    }
+
+                    #apply_tags
+
+                    return #new_state_fn_ident(rest.into_iter(), byte_idx + #run_length, captures, false);
+                }
+            };
+        }
 
         let accept_transitions = &accept_transitions[i];
 
@@ -706,13 +785,21 @@ fn codegen_functional(
                         #end_case
                     }
                     #cases
-                    ::core::option::Option::Some(_) => None,
+                    ::core::option::Option::Some(_) => ::core::option::Option::None,
                 };
             }
         };
     };
-    let exec_funcs: TokenStream = (0..states.len())
-        .filter(|i| !excluded_states[*i])
+    let exec_funcs: TokenStream = runs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !excluded_states[*i])
+        .filter_map(|(i, run)| match run {
+            StateRunInclusion::Start(run) => Some((i, Some(run))),
+            StateRunInclusion::Internal => None,
+            StateRunInclusion::End => Some((i, None)),
+            StateRunInclusion::None => Some((i, None)),
+        })
         .map(make_exec_func)
         .collect();
 
