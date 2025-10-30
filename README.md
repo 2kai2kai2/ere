@@ -2,7 +2,7 @@
 [![docs.rs](https://img.shields.io/docsrs/ere)](https://docs.rs/ere/latest/ere/)
 
 This crate provides tools for compiling and using regular expressions.
-It is intended as a simple but compiler-checked version of the [`regex`](https://crates.io/crates/regex) crate, as it does regular expression compilation at compile-time, but only supports [POSIX Extended Regular Expressions](https://en.wikibooks.org/wiki/Regular_Expressions/POSIX-Extended_Regular_Expressions).
+It is intended as a simple but compiler-checked version of the [`regex`](https://crates.io/crates/regex) crate, as it does regular expression compilation at compile-time, but only supports [POSIX Extended Regular Expressions](https://en.wikibooks.org/wiki/Regular_Expressions/POSIX-Extended_Regular_Expressions)*.
 
 ## Usage
 
@@ -66,7 +66,7 @@ fn exec() {
 
 To minimize memory overhead and binary size, it is recommended to create a single instance of each regular expression (using a `const` variable) rather than creating multiple.
 
-Some features are not fully implemented, such as POSIX-mode ambiguous submatch rules (we currently use greedy mode, which is the much more common and efficient method). See the [roadmap](ROADMAP.md) for more details.
+*Some features are not fully implemented, such as POSIX-mode ambiguous submatch rules (we currently use greedy mode, which is the much more common and efficient method). See the [roadmap](ROADMAP.md) for more details.
 
 ## Alternatives
 

@@ -1,3 +1,17 @@
+## 0.2.3
+
+-   Fixed import issues in macros, where `ere_core` was referenced rather than `ere`.
+-   Added functional-style codegen implementation for u8 one-pass engine
+    (for improved performance in certain cases).
+-   Added fixed-offset implementation for `exec`, where if capture groups always appear at the same offsets,
+    we can just run `test` and then index those offsets if it matches.
+-   Reduced redirection overhead for calls to `exec` and `test` (by unifying the interface across engines).
+-   Added run-based optimizations to avoid short-circuiting on non-branching NFA paths
+    for the functional-style codegen in the u8 one-pass engine
+    (to reduce branch prediction misses and enable vectorization or in the future possibly SIMD).
+-   Expanded testing.
+-   Added initial benchmarking.
+
 ## 0.2.2
 
 -   Added u8 one-pass engine.
