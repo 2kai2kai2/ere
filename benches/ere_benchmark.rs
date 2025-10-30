@@ -86,6 +86,105 @@ fn rgb_simple(c: &mut Criterion) {
     }
 }
 
+fn rgba(c: &mut Criterion) {
+    // test all relevant engines
+    const REGEXES: [(&'static str, Regex<5>); 1] = compile_engines!(
+        r"^#([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})?$",
+        // pikevm,
+        // pikevm_u8,
+        one_pass_u8,
+    );
+
+    let regex_runtime = ::regex::Regex::new(
+        r"^#([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})?$",
+    )
+    .unwrap();
+
+    let mut group = c.benchmark_group("rgba");
+    for i in 0..5 {
+        let mut hasher = ::std::hash::DefaultHasher::new();
+        hasher.write_u8(i);
+        let [r, g, b, a, has_alpha, ..] = hasher.finish().to_le_bytes();
+        let haystack = if has_alpha >= 128 {
+            format!("#{r:02x}{g:02x}{b:02x}")
+        } else {
+            format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+        };
+
+        for (engine_name, engine) in REGEXES.iter() {
+            group.bench_with_input(
+                BenchmarkId::new(format!("ere {engine_name} (test)"), &haystack),
+                &haystack,
+                |b, s| b.iter(|| assert!(engine.test(s))),
+            );
+            group.bench_with_input(
+                BenchmarkId::new(format!("ere {engine_name} (exec)"), &haystack),
+                &haystack,
+                |b, s| b.iter(|| assert!(engine.exec(s).is_some())),
+            );
+        }
+        group.bench_with_input(
+            BenchmarkId::new("regex (test)", &haystack),
+            &haystack,
+            |b, s| b.iter(|| assert!(regex_runtime.is_match(s))),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("regex (exec)", &haystack),
+            &haystack,
+            |b, s| b.iter(|| assert!(regex_runtime.captures(s).is_some())),
+        );
+    }
+}
+
+fn phone_number_usa(c: &mut Criterion) {
+    // test all relevant engines
+    const REGEXES: [(&'static str, Regex<2>); 1] = compile_engines!(
+        r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$",
+        // pikevm,
+        // pikevm_u8,
+        one_pass_u8,
+    );
+
+    let regex_runtime = ::regex::Regex::new(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$").unwrap();
+
+    let mut group = c.benchmark_group("phone_number_usa");
+    for i in 0..5 {
+        let mut hasher = ::std::hash::DefaultHasher::new();
+        hasher.write_u8(i);
+        let value = hasher.finish();
+        let has_country_code = value & 1 != 0;
+        let value = format!("{value:010}");
+        let haystack = if has_country_code {
+            format!("+1 {}-{}-{}", &value[0..3], &value[3..6], &value[6..10])
+        } else {
+            format!("{}-{}-{}", &value[0..3], &value[3..6], &value[6..10])
+        };
+
+        for (engine_name, engine) in REGEXES.iter() {
+            group.bench_with_input(
+                BenchmarkId::new(format!("ere {engine_name} (test)"), &haystack),
+                &haystack,
+                |b, s| b.iter(|| assert!(engine.test(s))),
+            );
+            group.bench_with_input(
+                BenchmarkId::new(format!("ere {engine_name} (exec)"), &haystack),
+                &haystack,
+                |b, s| b.iter(|| assert!(engine.exec(s).is_some())),
+            );
+        }
+        group.bench_with_input(
+            BenchmarkId::new("regex (test)", &haystack),
+            &haystack,
+            |b, s| b.iter(|| assert!(regex_runtime.is_match(s))),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("regex (exec)", &haystack),
+            &haystack,
+            |b, s| b.iter(|| assert!(regex_runtime.captures(s).is_some())),
+        );
+    }
+}
+
 fn ipv4(c: &mut Criterion) {
     const REGEX: Regex<5> = compile_regex!(
         r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
@@ -175,6 +274,6 @@ fn big_haystack_1(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
-    targets = rgb_simple, ipv4, big_haystack_1
+    targets = rgb_simple, rgba, phone_number_usa, ipv4, big_haystack_1
 }
 criterion_main!(benches);
