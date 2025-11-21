@@ -78,15 +78,12 @@ pub(crate) fn serialize_fixed_offset_token_stream(
     offsets: Vec<(usize, usize)>,
     capture_groups: usize,
 ) -> proc_macro2::TokenStream {
-    let extract_offsets: proc_macro2::TokenStream = offsets
-        .iter()
-        .map(|(start, end)| {
-            if *start == usize::MAX || *end == usize::MAX {
-                return quote! { ::core::option::Option::None, };
-            }
-            return quote! { ::core::option::Option::Some(&text[#start..#end]), };
-        })
-        .collect();
+    let extract_offsets = offsets.iter().map(|(start, end)| {
+        if *start == usize::MAX || *end == usize::MAX {
+            return quote! { ::core::option::Option::None };
+        }
+        return quote! { ::core::option::Option::Some(&text[#start..#end]) };
+    });
 
     return quote! {{
         const TEST_FN: fn(&str) -> bool = #inner_engine.0;
@@ -96,9 +93,7 @@ pub(crate) fn serialize_fixed_offset_token_stream(
                 return ::core::option::Option::None;
             }
             return ::core::option::Option::Some(
-                [
-                    #extract_offsets
-                ]
+                [#(#extract_offsets),*]
             );
         }
         (TEST_FN, exec)

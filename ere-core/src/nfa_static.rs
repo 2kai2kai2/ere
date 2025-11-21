@@ -41,22 +41,14 @@ impl AtomStatic {
                 ::ere::nfa_static::AtomStatic::CharClass(#char_class)
             },
             Atom::MatchingList(bracket_expression_terms) => {
-                let terms: proc_macro2::TokenStream = bracket_expression_terms
-                    .into_iter()
-                    .map(|term| quote! { #term, })
-                    .collect();
                 quote! {{
-                    const terms: &'static [::ere::parse_tree::BracketExpressionTerm] = &[#terms];
+                    const terms: &'static [::ere::parse_tree::BracketExpressionTerm] = &[#(#bracket_expression_terms),*];
                     ::ere::nfa_static::AtomStatic::MatchingList(terms)
                 }}
             }
             Atom::NonmatchingList(bracket_expression_terms) => {
-                let terms: proc_macro2::TokenStream = bracket_expression_terms
-                    .into_iter()
-                    .map(|term| quote! { #term, })
-                    .collect();
                 quote! {{
-                    const terms: &'static [::ere::parse_tree::BracketExpressionTerm] = &[#terms];
+                    const terms: &'static [::ere::parse_tree::BracketExpressionTerm] = &[#(#bracket_expression_terms),*];
                     ::ere::nfa_static::AtomStatic::NonmatchingList(terms)
                 }}
             }
@@ -137,17 +129,12 @@ impl NFAStateStatic {
             transitions,
             epsilons,
         } = state;
-        let transitions: proc_macro2::TokenStream = transitions
+        let transitions = transitions
             .iter()
-            .map(|t| {
-                let t = NFATransitionStatic::serialize_as_token_stream(t);
-                return quote! { #t, };
-            })
-            .collect();
-        let epsilons: proc_macro2::TokenStream = epsilons.iter().map(|e| quote! { #e, }).collect();
+            .map(NFATransitionStatic::serialize_as_token_stream);
         return quote! {{
-            const transitions: &'static [::ere::nfa_static::NFATransitionStatic] = &[#transitions];
-            const epsilons: &'static [::ere::working_nfa::EpsilonTransition] = &[#epsilons];
+            const transitions: &'static [::ere::nfa_static::NFATransitionStatic] = &[#(#transitions),*];
+            const epsilons: &'static [::ere::working_nfa::EpsilonTransition] = &[#(#epsilons),*];
             ::ere::nfa_static::NFAStateStatic::__load(
                 transitions,
                 epsilons,
@@ -242,15 +229,9 @@ pub(crate) fn serialize_nfa_as_token_stream(nfa: &WorkingNFA) -> proc_macro2::To
     let WorkingNFA { states } = nfa;
 
     let capture_groups = nfa.num_capture_groups();
-    let state_defs: proc_macro2::TokenStream = states
-        .iter()
-        .map(|state| {
-            let state = NFAStateStatic::serialize_as_token_stream(state);
-            return quote! { #state, };
-        })
-        .collect();
+    let state_defs = states.iter().map(NFAStateStatic::serialize_as_token_stream);
     return quote! {{
-        const states: &'static [::ere::nfa_static::NFAStateStatic] = &[#state_defs];
+        const states: &'static [::ere::nfa_static::NFAStateStatic] = &[#(#state_defs),*];
 
         ::ere::nfa_static::NFAStatic::<#capture_groups>::__load(states)
     }};

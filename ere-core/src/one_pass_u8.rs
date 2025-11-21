@@ -310,13 +310,9 @@ fn codegen_vmlike(
 ) -> TokenStream {
     let U8NFA { states, .. } = nfa;
     let excluded_states = compute_excluded_states(nfa);
-    let enum_states: proc_macro2::TokenStream = std::iter::IntoIterator::into_iter(0..states.len())
+    let enum_states = std::iter::IntoIterator::into_iter(0..states.len())
         .filter(|i| !excluded_states[*i])
-        .map(|i| {
-            let label = vmstate_label(i);
-            return quote! { #label, };
-        })
-        .collect();
+        .map(vmstate_label);
 
     let make_test_match_statements = |state_idx: usize| -> TokenStream {
         let mut out = TokenStream::new();
@@ -435,28 +431,24 @@ fn codegen_vmlike(
         return out;
     };
 
-    let test_match_statements: TokenStream = (0..states.len())
+    let test_match_statements = (0..states.len())
         .filter(|state_idx| !excluded_states[*state_idx])
-        .map(make_test_match_statements)
-        .collect();
-    let test_match_statements_final: TokenStream = (0..states.len())
+        .map(make_test_match_statements);
+    let test_match_statements_final = (0..states.len())
         .filter(|state_idx| !excluded_states[*state_idx])
-        .map(make_test_match_statements_final)
-        .collect();
+        .map(make_test_match_statements_final);
 
-    let exec_match_statements: TokenStream = (0..states.len())
+    let exec_match_statements = (0..states.len())
         .filter(|state_idx| !excluded_states[*state_idx])
-        .map(make_exec_match_statements)
-        .collect();
-    let exec_match_statements_final: TokenStream = (0..states.len())
+        .map(make_exec_match_statements);
+    let exec_match_statements_final = (0..states.len())
         .filter(|state_idx| !excluded_states[*state_idx])
-        .map(make_exec_match_statements_final)
-        .collect();
+        .map(make_exec_match_statements_final);
 
     return quote! {{
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
         enum VMStates {
-            #enum_states
+            #(#enum_states,)*
         }
 
         fn test(text: &str) -> bool {
@@ -464,12 +456,12 @@ fn codegen_vmlike(
 
             for (i, c) in text.bytes().enumerate() {
                 match (state, c) {
-                    #test_match_statements
+                    #(#test_match_statements)*
                     _ => return false,
                 }
             }
             return match state {
-                #test_match_statements_final
+                #(#test_match_statements_final)*
                 _ => false,
             };
         }
@@ -479,12 +471,12 @@ fn codegen_vmlike(
 
             for (i, c) in text.bytes().enumerate() {
                 match (state, c) {
-                    #exec_match_statements
+                    #(#exec_match_statements)*
                     _ => return ::core::option::Option::None,
                 }
             }
             match state {
-                #exec_match_statements_final
+                #(#exec_match_statements_final)*
                 _ => return ::core::option::Option::None,
             }
 
@@ -541,25 +533,20 @@ fn codegen_functional(
             let new_state_fn_ident = &fn_idents[run.end_state];
 
             // TODO: make sure the non-branching path isn't *too* long
-            let conditions: proc_macro2::TokenStream = run
-                .symbols
-                .iter()
-                .enumerate()
-                .map(|(i, range)| {
-                    let lower = range.start();
-                    let upper = range.end();
-                    return quote! {
-                        (#lower <= run_part[#i]) & (run_part[#i] <= #upper) &
-                    };
-                })
-                .collect();
+            let conditions = run.symbols.iter().enumerate().map(|(i, range)| {
+                let lower = range.start();
+                let upper = range.end();
+                return quote! {
+                    (#lower <= run_part[#i]) & (run_part[#i] <= #upper)
+                };
+            });
 
             return quote! {
                 fn #fn_ident<'a>(mut bytes: ::core::slice::Iter<'a, u8>, start: bool) -> bool {
                     let ::core::option::Option::Some((run_part, rest)) = bytes.as_slice().split_at_checked(#run_length) else {
                         return false;
                     };
-                    let result = #conditions true;
+                    let result = #(#conditions)&*;
 
                     return result && #new_state_fn_ident(rest.iter(), false);
                 }
@@ -582,7 +569,7 @@ fn codegen_functional(
         };
 
         let symbol_transitions = &symbol_transitions[i];
-        let cases: TokenStream = symbol_transitions
+        let cases = symbol_transitions
             .into_iter()
             .map(|(range, tu)| {
                 let start = *range.start();
@@ -603,20 +590,19 @@ fn codegen_functional(
                 return quote! {
                     ::core::option::Option::Some(#start..=#end) #conditions => #new_state_fn_ident(bytes, false),
                 };
-            })
-            .collect();
+            });
 
         return quote! {
             fn #fn_ident<'a>(mut bytes: ::core::slice::Iter<'a, u8>, start: bool) -> bool {
                 return match bytes.next() {
                     ::core::option::Option::None => #end_case,
-                    #cases
+                    #(#cases)*
                     ::core::option::Option::Some(_) => false,
                 }
             }
         };
     };
-    let test_funcs: TokenStream = runs
+    let test_funcs = runs
         .iter()
         .enumerate()
         .filter(|(i, _)| !excluded_states[*i])
@@ -626,8 +612,7 @@ fn codegen_functional(
             StateRunInclusion::End => Some((i, None)),
             StateRunInclusion::None => Some((i, None)),
         })
-        .map(make_test_func)
-        .collect();
+        .map(make_test_func);
 
     /// Should have text position `i` and `mut captures` in local context
     fn make_capture_statements(tu: &ThreadUpdates) -> TokenStream {
@@ -665,31 +650,22 @@ fn codegen_functional(
             let new_state_fn_ident = &fn_idents[run.end_state];
 
             // TODO: make sure the non-branching path isn't *too* long
-            let conditions: proc_macro2::TokenStream = run
-                .symbols
-                .iter()
-                .enumerate()
-                .map(|(i, range)| {
-                    let lower = range.start();
-                    let upper = range.end();
-                    return quote! {
-                        (#lower <= run_part[#i]) & (run_part[#i] <= #upper) &
-                    };
-                })
-                .collect();
+            let conditions = run.symbols.iter().enumerate().map(|(i, range)| {
+                let lower = range.start();
+                let upper = range.end();
+                return quote! {
+                    (#lower <= run_part[#i]) & (run_part[#i] <= #upper)
+                };
+            });
 
-            let apply_tags: proc_macro2::TokenStream = run
-                .tags
-                .iter()
-                .map(|(offset, tag)| match tag {
-                    Tag::StartCapture(capture_idx) => {
-                        quote! { captures[#capture_idx].0 = #offset + byte_idx; }
-                    }
-                    Tag::EndCapture(capture_idx) => {
-                        quote! { captures[#capture_idx].1 = #offset + byte_idx; }
-                    }
-                })
-                .collect();
+            let apply_tags = run.tags.iter().map(|(offset, tag)| match tag {
+                Tag::StartCapture(capture_idx) => {
+                    quote! { captures[#capture_idx].0 = #offset + byte_idx; }
+                }
+                Tag::EndCapture(capture_idx) => {
+                    quote! { captures[#capture_idx].1 = #offset + byte_idx; }
+                }
+            });
 
             return quote! {
                 fn #fn_ident<'a>(
@@ -701,12 +677,12 @@ fn codegen_functional(
                     let ::core::option::Option::Some((run_part, rest)) = bytes.as_slice().split_at_checked(#run_length) else {
                         return ::core::option::Option::None;
                     };
-                    let result = #conditions true;
+                    let result = #(#conditions)&*;
                     if !result {
                         return ::core::option::Option::None;
                     }
 
-                    #apply_tags
+                    #(#apply_tags)*
 
                     return #new_state_fn_ident(rest.into_iter(), byte_idx + #run_length, captures, false);
                 }
@@ -745,33 +721,30 @@ fn codegen_functional(
         };
 
         let symbol_transitions = &symbol_transitions[i];
-        let cases: TokenStream = symbol_transitions
-            .into_iter()
-            .map(|(range, tu)| {
-                let start = *range.start();
-                let end = *range.end();
-                let conditions = if tu.end_only || (tu.start_only && i != 0) {
-                    // end_only should already be optimized out, but we are not at the end so this transition should never happen.
-                    // since we always start at state 0, start_only is only satisfied when `i == 0`
-                    quote! { if false }
-                } else if tu.start_only && i == 0 {
-                    // if we ever come back to state 0, we may actually need to check start
-                    quote! { if start }
-                } else {
-                    TokenStream::new()
-                };
+        let cases = symbol_transitions.into_iter().map(|(range, tu)| {
+            let start = *range.start();
+            let end = *range.end();
+            let conditions = if tu.end_only || (tu.start_only && i != 0) {
+                // end_only should already be optimized out, but we are not at the end so this transition should never happen.
+                // since we always start at state 0, start_only is only satisfied when `i == 0`
+                quote! { if false }
+            } else if tu.start_only && i == 0 {
+                // if we ever come back to state 0, we may actually need to check start
+                quote! { if start }
+            } else {
+                TokenStream::new()
+            };
 
-                let new_state_fn_ident = &fn_idents[tu.state];
-                let capture_statements = make_capture_statements(tu);
+            let new_state_fn_ident = &fn_idents[tu.state];
+            let capture_statements = make_capture_statements(tu);
 
-                return quote! {
-                    ::core::option::Option::Some(#start..=#end) #conditions => {
-                        #capture_statements
-                        #new_state_fn_ident(bytes, byte_idx + 1, captures, false)
-                    }
-                };
-            })
-            .collect();
+            return quote! {
+                ::core::option::Option::Some(#start..=#end) #conditions => {
+                    #capture_statements
+                    #new_state_fn_ident(bytes, byte_idx + 1, captures, false)
+                }
+            };
+        });
 
         return quote! {
             fn #fn_ident<'a>(
@@ -784,13 +757,13 @@ fn codegen_functional(
                     ::core::option::Option::None => {
                         #end_case
                     }
-                    #cases
+                    #(#cases)*
                     ::core::option::Option::Some(_) => ::core::option::Option::None,
                 };
             }
         };
     };
-    let exec_funcs: TokenStream = runs
+    let exec_funcs = runs
         .iter()
         .enumerate()
         .filter(|(i, _)| !excluded_states[*i])
@@ -800,18 +773,17 @@ fn codegen_functional(
             StateRunInclusion::End => Some((i, None)),
             StateRunInclusion::None => Some((i, None)),
         })
-        .map(make_exec_func)
-        .collect();
+        .map(make_exec_func);
 
     return quote! {{
         fn test<'a>(text: &'a str) -> bool {
-            #test_funcs
+            #(#test_funcs)*
             return func_state_0(text.as_bytes().iter(), true);
         }
         fn exec<'a>(text: &'a str) -> ::core::option::Option<[::core::option::Option<&'a str>; #num_captures]> {
             let captures: [(usize, usize); #num_captures] = [(usize::MAX, usize::MAX); #num_captures];
 
-            #exec_funcs
+            #(#exec_funcs)*
             let captures = func_state_0(text.as_bytes().iter(), 0, captures, true)?;
 
             let mut capture_strs = [::core::option::Option::None; #num_captures];
