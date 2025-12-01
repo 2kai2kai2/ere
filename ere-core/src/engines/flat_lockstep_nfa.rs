@@ -346,7 +346,7 @@ mod impl_exec {
             tokens.extend(quote! {{
                 let symbol = #symbol;
                 if symbol.check(c) {
-                    out.push(
+                    new_threads.push(
                         ::ere::flat_lockstep_nfa::Thread {
                             state: VMStates::#to_label,
                             captures: thread.captures.clone(),
@@ -360,6 +360,17 @@ mod impl_exec {
     /// Assumes the `VMStates` enum is already created locally in the token stream
     ///
     /// Creates the function `transition_symbols_exec` for running symbol transitions on the flat lockstep NFA
+    /// - expects `new_threads` to be empty
+    ///
+    /// ```ignore
+    /// fn transition_symbols_exec(
+    ///     threads: &[::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>],
+    ///     new_threads: &mut ::std::vec::Vec<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>>,
+    ///     c: char,
+    /// ) {
+    ///     // ...
+    /// }
+    /// ```
     pub(super) struct TransitionSymbols<'a>(pub &'a CachedNFA<'a>);
     impl<'a> ToTokens for TransitionSymbols<'a> {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
@@ -392,15 +403,14 @@ mod impl_exec {
             tokens.extend(quote! {
                 fn transition_symbols_exec(
                     threads: &[::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>],
+                    new_threads: &mut ::std::vec::Vec<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>>,
                     c: char,
-                ) -> ::std::vec::Vec<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>> {
-                    let mut out = ::std::vec::Vec::<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>>::new();
+                ) {
                     for thread in threads {
                         match thread.state {
                             #(#transition_symbols_defs_exec)*
                         }
                     }
-                    return out;
                 }
             });
         }
@@ -465,9 +475,10 @@ mod impl_exec {
     /// ```ignore
     /// fn transition_epsilons_exec(
     ///     threads: &[::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>],
+    ///     new_threads: &mut ::std::vec::Vec<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>>,
     ///     idx: usize,
     ///     len: usize,
-    /// ) -> ::std::vec::Vec<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>> {
+    /// ) {
     ///     // ...
     /// }
     /// ```
@@ -505,19 +516,18 @@ mod impl_exec {
             tokens.extend(quote! {
                 fn transition_epsilons_exec(
                     threads: &[::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>],
+                    new_threads: &mut ::std::vec::Vec<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>>,
                     idx: usize,
                     len: usize,
-                ) -> ::std::vec::Vec<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>> {
+                ) {
                     let is_start = idx == 0;
                     let is_end = idx == len;
                     let mut occupied_states = ::std::vec![false; #num_states];
-                    let mut out = ::std::vec::Vec::<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>>::new();
                     for thread in threads {
                         match thread.state {
                             #(#states_epsilon_transitions)*
                         }
                     }
-                    return out;
                 }
             });
         }
@@ -557,20 +567,24 @@ mod impl_exec {
                     #transition_epsilons_exec
 
                     let mut threads = ::std::vec::Vec::<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>>::new();
-
+                    let mut new_threads = ::std::vec::Vec::<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>>::new();
                     threads.push(::ere::flat_lockstep_nfa::Thread {
                         state: VMStates::State0,
                         captures: [(usize::MAX, usize::MAX); #capture_groups],
                     });
 
-                    let new_threads = transition_epsilons_exec(&threads, 0, text.len());
-                    threads = new_threads;
+                    transition_epsilons_exec(&threads, &mut new_threads, 0, text.len());
+                    ::std::mem::swap(&mut threads, &mut new_threads);
 
                     for (i, c) in text.char_indices() {
-                        let new_threads = transition_symbols_exec(&threads, c);
-                        threads = new_threads;
-                        let new_threads = transition_epsilons_exec(&threads, i + c.len_utf8(), text.len());
-                        threads = new_threads;
+                        new_threads.clear();
+                        transition_symbols_exec(&threads, &mut new_threads, c);
+                        ::std::mem::swap(&mut threads, &mut new_threads);
+
+                        new_threads.clear();
+                        transition_epsilons_exec(&threads, &mut new_threads, i + c.len_utf8(), text.len());
+                        ::std::mem::swap(&mut threads, &mut new_threads);
+
                         if threads.is_empty() {
                             return None;
                         }
@@ -614,7 +628,7 @@ impl ThreadUpdates {
         }};
     }
     /// Creates a block which takes `thread` from its local context, updates it using `self` (compile-time),
-    /// and appends it to `out` from its local context.
+    /// and appends it to `new_threads` from its local context.
     pub fn serialize_thread_update_exec(&self) -> proc_macro2::TokenStream {
         let new_state_idx = self.state;
         let new_state = ImplVMStateLabel(self.state);
@@ -639,7 +653,7 @@ impl ThreadUpdates {
 
                 #capture_updates
 
-                out.push(new_thread);
+                new_threads.push(new_thread);
                 occupied_states[#new_state_idx] = true;
             }
         };
