@@ -286,6 +286,60 @@ mod impl_test {
             });
         }
     }
+
+    pub(crate) struct TestFn<'a>(pub &'a CachedNFA<'a>);
+    impl<'a> ToTokens for TestFn<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let TestFn(nfa) = self;
+            let CachedNFA {
+                nfa: u8_nfa,
+                excluded_states,
+                ..
+            } = nfa;
+
+            let enum_states = excluded_states
+                .iter()
+                .enumerate()
+                .filter_map(|(i, excluded)| match excluded {
+                    true => None,
+                    false => Some(ImplVMStateLabel(i)),
+                });
+            let state_count = u8_nfa.states.len();
+            let accept_state = ImplVMStateLabel(state_count - 1);
+
+            let transition_symbols_test = TransitionSymbols(nfa);
+            let transition_epsilons_test = TransitionEpsilons(nfa);
+
+            tokens.extend(quote! {
+                fn test(text: &str) -> bool {
+                    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+                    enum VMStates {
+                        #(#enum_states,)*
+                    }
+
+                    #transition_symbols_test
+                    #transition_epsilons_test
+
+                    let mut list = [false; #state_count];
+                    let mut new_list = [false; #state_count];
+                    list[0] = true;
+
+                    transition_epsilons_test(&mut list, 0, text.len());
+                    for (i, c) in text.bytes().enumerate() {
+                        transition_symbols_test(&list, &mut new_list, c);
+                        if new_list.iter().all(|b| !b) {
+                            return false;
+                        }
+                        ::std::mem::swap(&mut list, &mut new_list);
+                        transition_epsilons_test(&mut list, i + 1, text.len());
+                        new_list.fill(false);
+                    }
+
+                    return list[#state_count - 1];
+                }
+            });
+        }
+    }
 }
 
 mod impl_exec {
@@ -490,6 +544,79 @@ mod impl_exec {
             });
         }
     }
+
+    pub(crate) struct ExecFn<'a>(pub &'a CachedNFA<'a>);
+    impl<'a> ToTokens for ExecFn<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let ExecFn(nfa) = self;
+            let CachedNFA {
+                nfa: u8_nfa,
+                excluded_states,
+                capture_groups,
+            } = nfa;
+
+            let enum_states = excluded_states
+                .iter()
+                .enumerate()
+                .filter_map(|(i, excluded)| match excluded {
+                    true => None,
+                    false => Some(ImplVMStateLabel(i)),
+                });
+            let state_count = u8_nfa.states.len();
+            let accept_state = ImplVMStateLabel(state_count - 1);
+
+            let transition_symbols_exec = impl_exec::TransitionSymbols(&nfa);
+            let transition_epsilons_exec = impl_exec::TransitionEpsilons(&nfa);
+
+            tokens.extend(quote! {
+                fn exec<'a>(text: &'a str) -> Option<[Option<&'a str>; #capture_groups]> {
+                    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+                    enum VMStates {
+                        #(#enum_states,)*
+                    }
+
+                    #transition_symbols_exec
+                    #transition_epsilons_exec
+
+                    let mut threads = ::std::vec::Vec::<::ere::flat_lockstep_nfa_u8::Thread<#capture_groups, VMStates>>::new();
+                    threads.push(::ere::flat_lockstep_nfa_u8::Thread {
+                        state: VMStates::State0,
+                        captures: [(usize::MAX, usize::MAX); #capture_groups],
+                    });
+
+                    let new_threads = transition_epsilons_exec(&threads, 0, text.len());
+                    threads = new_threads;
+
+                    for (i, c) in text.bytes().enumerate() {
+                        let new_threads = transition_symbols_exec(&threads, c);
+                        threads = new_threads;
+                        let new_threads = transition_epsilons_exec(&threads, i + 1, text.len());
+                        threads = new_threads;
+                        if threads.is_empty() {
+                            return ::core::option::Option::None;
+                        }
+                    }
+
+                    let final_capture_bounds = threads
+                        .into_iter()
+                        .find(|t| t.state == VMStates::#accept_state)?
+                        .captures;
+                    let mut captures = [::core::option::Option::None; #capture_groups];
+                    for (i, (start, end)) in final_capture_bounds.into_iter().enumerate() {
+                        if start != usize::MAX {
+                            assert_ne!(end, usize::MAX);
+                            // assert!(start <= end);
+                            captures[i] = text.get(start..end);
+                            assert!(captures[i].is_some());
+                        } else {
+                            assert_eq!(end, usize::MAX);
+                        }
+                    }
+                    return ::core::option::Option::Some(captures);
+                }
+            });
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -594,90 +721,12 @@ fn calculate_epsilon_propogations(nfa: &U8NFA, state: usize) -> Vec<ThreadUpdate
 pub(crate) fn serialize_flat_lockstep_nfa_u8_token_stream(nfa: &U8NFA) -> proc_macro2::TokenStream {
     let nfa = CachedNFA::new(nfa);
 
-    let capture_groups = nfa.capture_groups;
-    let enum_states = nfa
-        .excluded_states
-        .iter()
-        .enumerate()
-        .filter_map(|(i, excluded)| match excluded {
-            true => None,
-            false => Some(ImplVMStateLabel(i)),
-        });
-    let state_count = nfa.nfa.states.len(); // TODO: not all of these are used, so we may be able to slightly reduce usage.
-    let accept_state = ImplVMStateLabel(state_count - 1);
-
-    let transition_symbols_test = impl_test::TransitionSymbols(&nfa);
-    let transition_symbols_exec = impl_exec::TransitionSymbols(&nfa);
-
-    let transition_epsilons_test = impl_test::TransitionEpsilons(&nfa);
-    let transition_epsilons_exec = impl_exec::TransitionEpsilons(&nfa);
+    let test_fn = impl_test::TestFn(&nfa);
+    let exec_fn = impl_exec::ExecFn(&nfa);
 
     return quote! {{
-        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-        enum VMStates {
-            #(#enum_states,)*
-        }
-
-        #transition_symbols_test
-        #transition_symbols_exec
-        #transition_epsilons_test
-        #transition_epsilons_exec
-
-        fn test(text: &str) -> bool {
-            let mut list = [false; #state_count];
-            let mut new_list = [false; #state_count];
-            list[0] = true;
-
-            transition_epsilons_test(&mut list, 0, text.len());
-            for (i, c) in text.bytes().enumerate() {
-                transition_symbols_test(&list, &mut new_list, c);
-                if new_list.iter().all(|b| !b) {
-                    return false;
-                }
-                ::std::mem::swap(&mut list, &mut new_list);
-                transition_epsilons_test(&mut list, i + 1, text.len());
-                new_list.fill(false);
-            }
-
-            return list[#state_count - 1];
-        }
-        fn exec<'a>(text: &'a str) -> Option<[Option<&'a str>; #capture_groups]> {
-            let mut threads = ::std::vec::Vec::<::ere::flat_lockstep_nfa_u8::Thread<#capture_groups, VMStates>>::new();
-            threads.push(::ere::flat_lockstep_nfa_u8::Thread {
-                state: VMStates::State0,
-                captures: [(usize::MAX, usize::MAX); #capture_groups],
-            });
-
-            let new_threads = transition_epsilons_exec(&threads, 0, text.len());
-            threads = new_threads;
-
-            for (i, c) in text.bytes().enumerate() {
-                let new_threads = transition_symbols_exec(&threads, c);
-                threads = new_threads;
-                let new_threads = transition_epsilons_exec(&threads, i + 1, text.len());
-                threads = new_threads;
-                if threads.is_empty() {
-                    return ::core::option::Option::None;
-                }
-            }
-
-            let final_capture_bounds = threads
-                .into_iter()
-                .find(|t| t.state == VMStates::#accept_state)?
-                .captures;
-            let mut captures = [::core::option::Option::None; #capture_groups];
-            for (i, (start, end)) in final_capture_bounds.into_iter().enumerate() {
-                if start != usize::MAX {
-                    assert_ne!(end, usize::MAX);
-                    // assert!(start <= end);
-                    captures[i] = text.get(start..end);
-                    assert!(captures[i].is_some());
-                } else {
-                    assert_eq!(end, usize::MAX);
-                }
-            }
-            return ::core::option::Option::Some(captures);
-        }
+        #test_fn
+        #exec_fn
 
         (test, exec)
     }};
