@@ -2,33 +2,7 @@
 
 use crate::working_u8_nfa::U8NFA;
 use proc_macro2::TokenStream;
-use quote::quote;
-
-pub struct U8OnePass<const N: usize> {
-    test_fn: fn(&str) -> bool,
-    exec_fn: for<'a> fn(&'a str) -> Option<[Option<&'a str>; N]>,
-}
-impl<const N: usize> U8OnePass<N> {
-    pub fn test(&self, text: &str) -> bool {
-        return (self.test_fn)(text);
-    }
-    pub fn exec<'a>(&self, text: &'a str) -> Option<[Option<&'a str>; N]> {
-        return (self.exec_fn)(text);
-    }
-}
-
-/// Only intended for internal use by macros.
-pub const fn __load_u8onepass<const N: usize>(
-    test_fn: fn(&str) -> bool,
-    exec_fn: for<'a> fn(&'a str) -> Option<[Option<&'a str>; N]>,
-) -> U8OnePass<N> {
-    return U8OnePass { test_fn, exec_fn };
-}
-
-fn vmstate_label(idx: usize) -> proc_macro2::Ident {
-    let label = format!("State{idx}");
-    return proc_macro2::Ident::new(&label, proc_macro2::Span::call_site());
-}
+use quote::{quote, ToTokens, TokenStreamExt};
 
 /// We only need to retain states with outgoing symbol transitions
 /// As well as the initial and accept states
@@ -301,6 +275,319 @@ fn compute_runs(
     return out;
 }
 
+struct ImplVMStateLabel {
+    idx: usize,
+}
+impl ImplVMStateLabel {
+    fn new(idx: usize) -> ImplVMStateLabel {
+        return ImplVMStateLabel { idx };
+    }
+}
+impl ToTokens for ImplVMStateLabel {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        let ImplVMStateLabel { idx } = self;
+        let label = format!("State{idx}");
+        let ident = proc_macro2::Ident::new(&label, proc_macro2::Span::call_site());
+        tokens.append(ident);
+    }
+}
+
+/// [`ToTokens`] implementation for the `test` function with vm-like one-pass implementation.
+mod vmlike_test {
+    use super::*;
+
+    struct MatchStatement<'a> {
+        state_idx: usize,
+        symbol_transitions: &'a [(std::ops::RangeInclusive<u8>, ThreadUpdates)],
+        excluded_states: &'a [bool],
+    }
+    impl<'a> ToTokens for MatchStatement<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &MatchStatement {
+                state_idx,
+                symbol_transitions,
+                excluded_states,
+            } = self;
+            let this_state = ImplVMStateLabel::new(state_idx);
+            for (range, thread) in symbol_transitions.iter() {
+                if excluded_states[thread.state] {
+                    continue; // no point in going here, we included the relevant propogated states already
+                }
+                if thread.end_only {
+                    continue; // only allowed in final match
+                }
+                let range_start = *range.start();
+                let range_end = *range.end();
+                let conditions = if thread.start_only {
+                    quote! {if i == 0}
+                } else {
+                    TokenStream::new()
+                };
+                let to = ImplVMStateLabel::new(thread.state);
+                tokens.extend(quote! {
+                    (VMStates::#this_state, #range_start..=#range_end) #conditions => {
+                        state = VMStates::#to;
+                    }
+                });
+            }
+        }
+    }
+
+    /// Match statements after the input is fully consumed
+    struct MatchStatementFinal<'a> {
+        state_idx: usize,
+        accept_transitions: &'a [ThreadUpdates],
+    }
+    impl<'a> ToTokens for MatchStatementFinal<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &MatchStatementFinal {
+                state_idx,
+                accept_transitions,
+            } = self;
+            let this_state = ImplVMStateLabel::new(state_idx);
+            // Off the top of my head I think it should only ever have at most one, but idk
+            for thread in accept_transitions.iter() {
+                let conditions = if thread.start_only {
+                    quote! {if i == 0}
+                } else {
+                    TokenStream::new()
+                };
+                tokens.extend(quote! {
+                    VMStates::#this_state #conditions => true,
+                });
+            }
+        }
+    }
+
+    /// Implements `ToTokens` to create the `test` function with vm-like one-pass implementation.
+    pub(super) struct TestFn<'a> {
+        pub(super) symbol_transitions: &'a [Vec<(std::ops::RangeInclusive<u8>, ThreadUpdates)>],
+        pub(super) accept_transitions: &'a [Vec<ThreadUpdates>],
+        pub(super) excluded_states: &'a [bool],
+    }
+    impl<'a> ToTokens for TestFn<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &TestFn {
+                symbol_transitions,
+                accept_transitions,
+                excluded_states,
+            } = self;
+            let enum_states = std::iter::IntoIterator::into_iter(0..symbol_transitions.len())
+                .filter(|i| !excluded_states[*i])
+                .map(ImplVMStateLabel::new);
+
+            let test_match_statements = symbol_transitions
+                .iter()
+                .enumerate()
+                .filter(|(state_idx, _)| !excluded_states[*state_idx])
+                .map(|(state_idx, symbol_transitions)| MatchStatement {
+                    state_idx,
+                    symbol_transitions: &symbol_transitions,
+                    excluded_states: &excluded_states,
+                });
+            let test_match_statements_final = accept_transitions
+                .iter()
+                .enumerate()
+                .filter(|(state_idx, _)| !excluded_states[*state_idx])
+                .map(|(state_idx, accept_transitions)| MatchStatementFinal {
+                    state_idx,
+                    accept_transitions: &accept_transitions,
+                });
+            tokens.extend(quote! {
+                fn test(text: &str) -> bool {
+                    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+                    enum VMStates {
+                        #(#enum_states,)*
+                    }
+
+                    let mut state: VMStates = VMStates::State0;
+
+                    for (i, c) in text.bytes().enumerate() {
+                        match (state, c) {
+                            #(#test_match_statements)*
+                            _ => return false,
+                        }
+                    }
+                    return match state {
+                        #(#test_match_statements_final)*
+                        _ => false,
+                    };
+                }
+            });
+        }
+    }
+}
+/// [`ToTokens`] implementation for the `exec` function with vm-like one-pass implementation.
+mod vmlike_exec {
+    use super::*;
+
+    struct MatchStatement<'a> {
+        state_idx: usize,
+        symbol_transitions: &'a [(std::ops::RangeInclusive<u8>, ThreadUpdates)],
+        excluded_states: &'a [bool],
+    }
+    impl<'a> ToTokens for MatchStatement<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &MatchStatement {
+                state_idx,
+                symbol_transitions,
+                excluded_states,
+            } = self;
+            let this_state = ImplVMStateLabel::new(state_idx);
+            for (range, thread) in symbol_transitions.iter() {
+                if excluded_states[thread.state] {
+                    continue; // no point in going here, we included the relevant propogated states already
+                }
+                if thread.end_only {
+                    continue; // only allowed in final match
+                }
+                let range_start = *range.start();
+                let range_end = *range.end();
+                let conditions = if thread.start_only {
+                    quote! {if i == 0}
+                } else {
+                    TokenStream::new()
+                };
+                let mut capture_updates = TokenStream::new();
+                for (group_num, (start, end)) in thread.update_captures.iter().enumerate() {
+                    if *start {
+                        capture_updates.extend(quote! {
+                            captures[#group_num].0 = i;
+                        });
+                    }
+                    if *end {
+                        capture_updates.extend(quote! {
+                            captures[#group_num].1 = i;
+                        });
+                    }
+                }
+                let to = ImplVMStateLabel::new(thread.state);
+                tokens.extend(quote! {
+                    (VMStates::#this_state, #range_start..=#range_end) #conditions => {
+                        #capture_updates
+                        state = VMStates::#to;
+                    }
+                });
+            }
+        }
+    }
+
+    struct MatchStatementFinal<'a> {
+        state_idx: usize,
+        accept_transitions: &'a [ThreadUpdates],
+    }
+    impl<'a> ToTokens for MatchStatementFinal<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &MatchStatementFinal {
+                state_idx,
+                accept_transitions,
+            } = self;
+            let this_state = ImplVMStateLabel::new(state_idx);
+            for thread in accept_transitions.iter() {
+                // end only is always the case here
+                let conditions = if thread.start_only {
+                    quote! {if i == 0}
+                } else {
+                    TokenStream::new()
+                };
+                let mut capture_updates = TokenStream::new();
+                for (group_num, (start, end)) in thread.update_captures.iter().enumerate() {
+                    if *start {
+                        capture_updates.extend(quote! {
+                            captures[#group_num].0 = text.len();
+                        });
+                    }
+                    if *end {
+                        capture_updates.extend(quote! {
+                            captures[#group_num].1 = text.len();
+                        });
+                    }
+                }
+                tokens.extend(quote! {
+                    VMStates::#this_state #conditions => {
+                        #capture_updates
+                    }
+                });
+            }
+        }
+    }
+
+    /// Implements `ToTokens` to create the `exec` function with vm-like one-pass implementation.
+    pub(super) struct ExecFn<'a> {
+        pub(super) num_captures: usize,
+        pub(super) symbol_transitions: &'a [Vec<(std::ops::RangeInclusive<u8>, ThreadUpdates)>],
+        pub(super) accept_transitions: &'a [Vec<ThreadUpdates>],
+        pub(super) excluded_states: &'a [bool],
+    }
+    impl<'a> ToTokens for ExecFn<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &ExecFn {
+                num_captures,
+                symbol_transitions,
+                accept_transitions,
+                excluded_states,
+            } = self;
+            let enum_states = std::iter::IntoIterator::into_iter(0..symbol_transitions.len())
+                .filter(|i| !excluded_states[*i])
+                .map(ImplVMStateLabel::new);
+
+            let match_statements = symbol_transitions
+                .iter()
+                .enumerate()
+                .filter(|(state_idx, _)| !excluded_states[*state_idx])
+                .map(|(state_idx, symbol_transitions)| MatchStatement {
+                    state_idx,
+                    symbol_transitions: &symbol_transitions,
+                    excluded_states: &excluded_states,
+                });
+            let match_statements_final = accept_transitions
+                .iter()
+                .enumerate()
+                .filter(|(state_idx, _)| !excluded_states[*state_idx])
+                .map(|(state_idx, accept_transitions)| MatchStatementFinal {
+                    state_idx,
+                    accept_transitions: &accept_transitions,
+                });
+
+            tokens.extend(quote! {
+            fn exec<'a>(text: &'a str) -> ::core::option::Option<[::core::option::Option<&'a str>; #num_captures]> {
+                #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+                enum VMStates {
+                    #(#enum_states,)*
+                }
+
+                let mut state: VMStates = VMStates::State0;
+                let mut captures: [(usize, usize); #num_captures] = [(usize::MAX, usize::MAX); #num_captures];
+
+                for (i, c) in text.bytes().enumerate() {
+                    match (state, c) {
+                        #(#match_statements)*
+                        _ => return ::core::option::Option::None,
+                    }
+                }
+                match state {
+                    #(#match_statements_final)*
+                    _ => return ::core::option::Option::None,
+                }
+
+                let mut capture_strs = [::core::option::Option::None; #num_captures];
+                for (i, (start, end)) in captures.into_iter().enumerate() {
+                    if start != usize::MAX {
+                        assert_ne!(end, usize::MAX);
+                        // assert!(start <= end);
+                        capture_strs[i] = text.get(start..end);
+                        assert!(capture_strs[i].is_some());
+                    } else {
+                        assert_eq!(end, usize::MAX);
+                    }
+                }
+                return ::core::option::Option::Some(capture_strs);
+            }
+        })
+        }
+    }
+}
+
 /// Will evaluate to a `const` pair `(test_fn, exec_fn)`.
 fn codegen_vmlike(
     nfa: &U8NFA,
@@ -308,229 +595,65 @@ fn codegen_vmlike(
     symbol_transitions: Vec<Vec<(std::ops::RangeInclusive<u8>, ThreadUpdates)>>,
     accept_transitions: Vec<Vec<ThreadUpdates>>,
 ) -> TokenStream {
-    let U8NFA { states, .. } = nfa;
     let excluded_states = compute_excluded_states(nfa);
-    let enum_states = std::iter::IntoIterator::into_iter(0..states.len())
-        .filter(|i| !excluded_states[*i])
-        .map(vmstate_label);
 
-    let make_test_match_statements = |state_idx: usize| -> TokenStream {
-        let mut out = TokenStream::new();
-        let this_state = vmstate_label(state_idx);
-        for (range, thread) in &symbol_transitions[state_idx] {
-            if excluded_states[thread.state] {
-                continue; // no point in going here, we included the relevant propogated states already
-            }
-            if thread.end_only {
-                continue; // only allowed in final match
-            }
-            let range_start = *range.start();
-            let range_end = *range.end();
-            let conditions = if thread.start_only {
-                quote! {if i == 0}
-            } else {
-                TokenStream::new()
-            };
-            let to = vmstate_label(thread.state);
-            out.extend(quote! {
-                (VMStates::#this_state, #range_start..=#range_end) #conditions => {
-                    state = VMStates::#to;
-                }
-            });
-        }
-        return out;
+    let test = vmlike_test::TestFn {
+        symbol_transitions: &symbol_transitions,
+        accept_transitions: &accept_transitions,
+        excluded_states: &excluded_states,
     };
-    let make_test_match_statements_final = |state_idx: usize| -> TokenStream {
-        let mut out = TokenStream::new();
-        let this_state = vmstate_label(state_idx);
-        // Off the top of my head I think it should only ever have at most one, but idk
-        for thread in &accept_transitions[state_idx] {
-            let conditions = if thread.start_only {
-                quote! {if i == 0}
-            } else {
-                TokenStream::new()
-            };
-            out.extend(quote! {
-                VMStates::#this_state #conditions => true,
-            });
-        }
-        return out;
+    let exec = vmlike_exec::ExecFn {
+        num_captures,
+        symbol_transitions: &symbol_transitions,
+        accept_transitions: &accept_transitions,
+        excluded_states: &excluded_states,
     };
-
-    let make_exec_match_statements = |state_idx: usize| -> TokenStream {
-        let mut out = TokenStream::new();
-        let this_state = vmstate_label(state_idx);
-        for (range, thread) in &symbol_transitions[state_idx] {
-            if excluded_states[thread.state] {
-                continue; // no point in going here, we included the relevant propogated states already
-            }
-            if thread.end_only {
-                continue; // only allowed in final match
-            }
-            let range_start = *range.start();
-            let range_end = *range.end();
-            let conditions = if thread.start_only {
-                quote! {if i == 0}
-            } else {
-                TokenStream::new()
-            };
-            let mut capture_updates = TokenStream::new();
-            for (group_num, (start, end)) in thread.update_captures.iter().enumerate() {
-                if *start {
-                    capture_updates.extend(quote! {
-                        captures[#group_num].0 = i;
-                    });
-                }
-                if *end {
-                    capture_updates.extend(quote! {
-                        captures[#group_num].1 = i;
-                    });
-                }
-            }
-            let to = vmstate_label(thread.state);
-            out.extend(quote! {
-                (VMStates::#this_state, #range_start..=#range_end) #conditions => {
-                    #capture_updates
-                    state = VMStates::#to;
-                }
-            });
-        }
-
-        return out;
-    };
-    let make_exec_match_statements_final = |state_idx: usize| -> TokenStream {
-        let mut out = TokenStream::new();
-        let this_state = vmstate_label(state_idx);
-        for thread in &accept_transitions[state_idx] {
-            // end only is always the case here
-            let conditions = if thread.start_only {
-                quote! {if i == 0}
-            } else {
-                TokenStream::new()
-            };
-            let mut capture_updates = TokenStream::new();
-            for (group_num, (start, end)) in thread.update_captures.iter().enumerate() {
-                if *start {
-                    capture_updates.extend(quote! {
-                        captures[#group_num].0 = text.len();
-                    });
-                }
-                if *end {
-                    capture_updates.extend(quote! {
-                        captures[#group_num].1 = text.len();
-                    });
-                }
-            }
-            out.extend(quote! {
-                VMStates::#this_state #conditions => {
-                    #capture_updates
-                }
-            });
-        }
-
-        return out;
-    };
-
-    let test_match_statements = (0..states.len())
-        .filter(|state_idx| !excluded_states[*state_idx])
-        .map(make_test_match_statements);
-    let test_match_statements_final = (0..states.len())
-        .filter(|state_idx| !excluded_states[*state_idx])
-        .map(make_test_match_statements_final);
-
-    let exec_match_statements = (0..states.len())
-        .filter(|state_idx| !excluded_states[*state_idx])
-        .map(make_exec_match_statements);
-    let exec_match_statements_final = (0..states.len())
-        .filter(|state_idx| !excluded_states[*state_idx])
-        .map(make_exec_match_statements_final);
 
     return quote! {{
-        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-        enum VMStates {
-            #(#enum_states,)*
-        }
-
-        fn test(text: &str) -> bool {
-            let mut state: VMStates = VMStates::State0;
-
-            for (i, c) in text.bytes().enumerate() {
-                match (state, c) {
-                    #(#test_match_statements)*
-                    _ => return false,
-                }
-            }
-            return match state {
-                #(#test_match_statements_final)*
-                _ => false,
-            };
-        }
-        fn exec<'a>(text: &'a str) -> Option<[Option<&'a str>; #num_captures]> {
-            let mut state: VMStates = VMStates::State0;
-            let mut captures: [(usize, usize); #num_captures] = [(usize::MAX, usize::MAX); #num_captures];
-
-            for (i, c) in text.bytes().enumerate() {
-                match (state, c) {
-                    #(#exec_match_statements)*
-                    _ => return ::core::option::Option::None,
-                }
-            }
-            match state {
-                #(#exec_match_statements_final)*
-                _ => return ::core::option::Option::None,
-            }
-
-            let mut capture_strs = [::core::option::Option::None; #num_captures];
-            for (i, (start, end)) in captures.into_iter().enumerate() {
-                if start != usize::MAX {
-                    assert_ne!(end, usize::MAX);
-                    // assert!(start <= end);
-                    capture_strs[i] = text.get(start..end);
-                    assert!(capture_strs[i].is_some());
-                } else {
-                    assert_eq!(end, usize::MAX);
-                }
-            }
-            return Some(capture_strs);
-        }
+        #test
+        #exec
 
         (test, exec)
-    }}.into();
+    }}
+    .into();
 }
 
-/// Will evaluate to a `const` pair `(test_fn, exec_fn)`.
-///
-/// ## Params
-/// - `nfa` is the original nfa
-/// - `num_captures` is the calculated number of capture groups from `nfa`
-/// - `symbol_transitions` is the effective transitions (including other [`ThreadUpdates`] details) for each state.
-fn codegen_functional(
-    nfa: &U8NFA,
-    num_captures: usize,
-    symbol_transitions: Vec<Vec<(std::ops::RangeInclusive<u8>, ThreadUpdates)>>,
-    accept_transitions: Vec<Vec<ThreadUpdates>>,
-) -> TokenStream {
-    let U8NFA { states, .. } = nfa;
-    let excluded_states = compute_excluded_states(nfa);
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ImplFunctionalFnIdent {
+    state_idx: usize,
+}
+impl ImplFunctionalFnIdent {
+    fn new(state_idx: usize) -> ImplFunctionalFnIdent {
+        return ImplFunctionalFnIdent { state_idx };
+    }
+}
+impl ToTokens for ImplFunctionalFnIdent {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        let ImplFunctionalFnIdent { state_idx } = self;
+        let ident = proc_macro2::Ident::new(
+            &format!("func_state_{state_idx}"),
+            proc_macro2::Span::call_site(),
+        );
+        tokens.append(ident);
+    }
+}
 
-    let fn_idents: Vec<_> = (0..states.len())
-        .map(|i| {
-            proc_macro2::Ident::new(&format!("func_state_{i}"), proc_macro2::Span::call_site())
-        })
-        .collect();
+mod functional_test {
+    use super::*;
 
-    let runs = compute_runs(&symbol_transitions);
+    pub(super) struct StateFnWithRun<'a> {
+        ident: ImplFunctionalFnIdent,
+        run: &'a Run,
+    }
+    impl<'a> ToTokens for StateFnWithRun<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &StateFnWithRun { ident, run } = self;
 
-    let make_test_func = |(i, run): (usize, Option<&Run>)| {
-        let fn_ident = &fn_idents[i];
-
-        if let Some(run) = run {
-            debug_assert_eq!(run.start_state, i);
             // It's a run so handle special case.
             // TODO: use explicit simd instructions. Currently we just hope LLVM vectorizes.
             let run_length = run.symbols.len();
 
-            let new_state_fn_ident = &fn_idents[run.end_state];
+            let new_state_fn_ident = ImplFunctionalFnIdent::new(run.end_state);
 
             // TODO: make sure the non-branching path isn't *too* long
             let conditions = run.symbols.iter().enumerate().map(|(i, range)| {
@@ -541,8 +664,8 @@ fn codegen_functional(
                 };
             });
 
-            return quote! {
-                fn #fn_ident<'a>(mut bytes: ::core::slice::Iter<'a, u8>, start: bool) -> bool {
+            tokens.extend( quote! {
+                fn #ident<'a>(mut bytes: ::core::slice::Iter<'a, u8>, start: bool) -> bool {
                     let ::core::option::Option::Some((run_part, rest)) = bytes.as_slice().split_at_checked(#run_length) else {
                         return false;
                     };
@@ -550,104 +673,134 @@ fn codegen_functional(
 
                     return result && #new_state_fn_ident(rest.iter(), false);
                 }
-            };
+            });
         }
+    }
 
-        let accept_transitions = &accept_transitions[i];
-        let end_case = if accept_transitions.is_empty() {
-            // state is not accepting
-            quote! { false }
-        } else if accept_transitions.iter().any(|tu| !tu.start_only) {
-            // state is accepting, doesn't care if we're at the start.
-            quote! { true }
-        } else if i == 0 {
-            // rare case: needs to be at the start + end to accept
-            quote! { start }
-        } else {
-            // rare case: if we are not at state 0, we cannot be at the start.
-            quote! { false }
-        };
+    pub(super) struct StateFnNormal<'a> {
+        ident: ImplFunctionalFnIdent,
+        accept_transitions: &'a [ThreadUpdates],
+        symbol_transitions: &'a [(std::ops::RangeInclusive<u8>, ThreadUpdates)],
+    }
+    impl<'a> ToTokens for StateFnNormal<'a> {
+        fn to_tokens(&self, tokens: &mut TokenStream) {
+            let &StateFnNormal {
+                ident,
+                accept_transitions,
+                symbol_transitions,
+            } = self;
 
-        let symbol_transitions = &symbol_transitions[i];
-        let cases = symbol_transitions
+            let end_case = if accept_transitions.is_empty() {
+                // state is not accepting
+                quote! { false }
+            } else if accept_transitions.iter().any(|tu| !tu.start_only) {
+                // state is accepting, doesn't care if we're at the start.
+                quote! { true }
+            } else if ident.state_idx == 0 {
+                // rare case: needs to be at the start + end to accept
+                quote! { start }
+            } else {
+                // rare case: if we are not at state 0, we cannot be at the start.
+                quote! { false }
+            };
+
+            let cases = symbol_transitions
             .into_iter()
             .map(|(range, tu)| {
                 let start = *range.start();
                 let end = *range.end();
-                let conditions = if tu.end_only || (tu.start_only && i != 0) {
+                let conditions = if tu.end_only || (tu.start_only && ident.state_idx != 0) {
                     // end_only should already be optimized out, but we are not at the end so this transition should never happen.
                     // since we always start at state 0, start_only is only satisfied when `i == 0`
                     quote! { if false }
-                } else if tu.start_only && i == 0 {
+                } else if tu.start_only && ident.state_idx == 0 {
                     // if we ever come back to state 0, we may actually need to check start
                     quote! { if start }
                 } else {
                     TokenStream::new()
                 };
 
-                let new_state_fn_ident = &fn_idents[tu.state];
+                let new_state_fn_ident = ImplFunctionalFnIdent::new(tu.state);
 
                 return quote! {
                     ::core::option::Option::Some(#start..=#end) #conditions => #new_state_fn_ident(bytes, false),
                 };
             });
 
-        return quote! {
-            fn #fn_ident<'a>(mut bytes: ::core::slice::Iter<'a, u8>, start: bool) -> bool {
-                return match bytes.next() {
-                    ::core::option::Option::None => #end_case,
-                    #(#cases)*
-                    ::core::option::Option::Some(_) => false,
+            tokens.extend(quote! {
+                fn #ident<'a>(mut bytes: ::core::slice::Iter<'a, u8>, start: bool) -> bool {
+                    return match bytes.next() {
+                        ::core::option::Option::None => #end_case,
+                        #(#cases)*
+                        ::core::option::Option::Some(_) => false,
+                    }
                 }
-            }
-        };
-    };
-    let test_funcs = runs
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !excluded_states[*i])
-        .filter_map(|(i, run)| match run {
-            StateRunInclusion::Start(run) => Some((i, Some(run))),
-            StateRunInclusion::Internal => None,
-            StateRunInclusion::End => Some((i, None)),
-            StateRunInclusion::None => Some((i, None)),
-        })
-        .map(make_test_func);
-
-    /// Should have text position `i` and `mut captures` in local context
-    fn make_capture_statements(tu: &ThreadUpdates) -> TokenStream {
-        fn map_capture((capture_group, (start, end)): (usize, &(bool, bool))) -> TokenStream {
-            let mut out = TokenStream::new();
-            if *start {
-                out.extend(quote! {
-                    captures[#capture_group].0 = byte_idx;
-                });
-            }
-            if *end {
-                out.extend(quote! {
-                    captures[#capture_group].1 = byte_idx;
-                });
-            }
-            return out;
+            });
         }
-        return tu
-            .update_captures
-            .iter()
-            .enumerate()
-            .map(map_capture)
-            .collect();
     }
 
-    let make_exec_func = |(i, run): (usize, Option<&Run>)| {
-        let fn_ident = &fn_idents[i];
+    pub(super) enum StateFn<'a> {
+        WithRun(StateFnWithRun<'a>),
+        Normal(StateFnNormal<'a>),
+    }
+    impl<'a> StateFn<'a> {
+        pub(super) fn new_run(ident: usize, run: &'a Run) -> Self {
+            return Self::WithRun(StateFnWithRun {
+                ident: ImplFunctionalFnIdent::new(ident),
+                run,
+            });
+        }
+        pub(super) fn new_normal(
+            ident: usize,
+            accept_transitions: &'a [ThreadUpdates],
+            symbol_transitions: &'a [(std::ops::RangeInclusive<u8>, ThreadUpdates)],
+        ) -> Self {
+            return Self::Normal(StateFnNormal {
+                ident: ImplFunctionalFnIdent::new(ident),
+                accept_transitions,
+                symbol_transitions,
+            });
+        }
+    }
+    impl<'a> ToTokens for StateFn<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            match self {
+                StateFn::WithRun(fn_with_run) => {
+                    fn_with_run.to_tokens(tokens);
+                }
+                StateFn::Normal(fn_normal) => {
+                    fn_normal.to_tokens(tokens);
+                }
+            }
+        }
+    }
 
-        if let Some(run) = run {
-            debug_assert_eq!(run.start_state, i);
-            // It's a run so handle special case.
+    // struct ImplFunctionalTestFn<'a> {
+    //     ident: ImplFunctionalFnIdent,
+    //     symbol_transitions: &'a [Vec<(std::ops::RangeInclusive<u8>, ThreadUpdates)>],
+    //     accept_transitions: &'a [Vec<ThreadUpdates>],
+    // }
+}
+
+mod functional_exec {
+    use super::*;
+
+    pub(super) struct StateFnWithRun<'a> {
+        num_captures: usize,
+        ident: ImplFunctionalFnIdent,
+        run: &'a Run,
+    }
+    impl<'a> ToTokens for StateFnWithRun<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &StateFnWithRun {
+                num_captures,
+                ident,
+                run,
+            } = self;
             // TODO: use explicit simd instructions. Currently we just hope LLVM vectorizes.
             let run_length = run.symbols.len();
 
-            let new_state_fn_ident = &fn_idents[run.end_state];
+            let new_state_fn_ident = ImplFunctionalFnIdent::new(run.end_state);
 
             // TODO: make sure the non-branching path isn't *too* long
             let conditions = run.symbols.iter().enumerate().map(|(i, range)| {
@@ -667,119 +820,248 @@ fn codegen_functional(
                 }
             });
 
-            return quote! {
-                fn #fn_ident<'a>(
-                    mut bytes: ::core::slice::Iter<'a, u8>,
-                    byte_idx: usize,
-                    mut captures: [(usize, usize); #num_captures],
-                    start: bool,
-                ) -> Option<[(usize, usize); #num_captures]> {
-                    let ::core::option::Option::Some((run_part, rest)) = bytes.as_slice().split_at_checked(#run_length) else {
-                        return ::core::option::Option::None;
-                    };
-                    let result = #(#conditions)&*;
-                    if !result {
-                        return ::core::option::Option::None;
-                    }
-
-                    #(#apply_tags)*
-
-                    return #new_state_fn_ident(rest.into_iter(), byte_idx + #run_length, captures, false);
-                }
-            };
-        }
-
-        let accept_transitions = &accept_transitions[i];
-
-        // for end_case, `end` check is implicit
-        let end_case = match &accept_transitions.as_slice() {
-            &[] => quote! { ::core::option::Option::None },
-            &[tu] if tu.start_only && i == 0 => {
-                // Accept if `start`
-                let capture_statements = make_capture_statements(tu);
-                quote! {
-                    #capture_statements
-                    if start {
-                        ::core::option::Option::Some(captures)
-                    } else {
-                        ::core::option::Option::None
-                    }
-                }
-            }
-            &[tu] if tu.start_only && i != 0 => quote! { ::core::option::Option::None },
-            &[tu] => {
-                // is always accepting
-                let capture_statements = make_capture_statements(tu);
-                quote! {
-                    #capture_statements
-                    ::core::option::Option::Some(captures)
-                }
-            }
-            _more => quote! {
-                compiler_error!("Should only be one thread update on accept for one-pass");
-            },
-        };
-
-        let symbol_transitions = &symbol_transitions[i];
-        let cases = symbol_transitions.into_iter().map(|(range, tu)| {
-            let start = *range.start();
-            let end = *range.end();
-            let conditions = if tu.end_only || (tu.start_only && i != 0) {
-                // end_only should already be optimized out, but we are not at the end so this transition should never happen.
-                // since we always start at state 0, start_only is only satisfied when `i == 0`
-                quote! { if false }
-            } else if tu.start_only && i == 0 {
-                // if we ever come back to state 0, we may actually need to check start
-                quote! { if start }
-            } else {
-                TokenStream::new()
-            };
-
-            let new_state_fn_ident = &fn_idents[tu.state];
-            let capture_statements = make_capture_statements(tu);
-
-            return quote! {
-                ::core::option::Option::Some(#start..=#end) #conditions => {
-                    #capture_statements
-                    #new_state_fn_ident(bytes, byte_idx + 1, captures, false)
-                }
-            };
-        });
-
-        return quote! {
-            fn #fn_ident<'a>(
+            tokens.extend(quote! {
+            fn #ident<'a>(
                 mut bytes: ::core::slice::Iter<'a, u8>,
                 byte_idx: usize,
                 mut captures: [(usize, usize); #num_captures],
                 start: bool,
             ) -> Option<[(usize, usize); #num_captures]> {
-                return match bytes.next() {
-                    ::core::option::Option::None => {
-                        #end_case
-                    }
-                    #(#cases)*
-                    ::core::option::Option::Some(_) => ::core::option::Option::None,
+                let ::core::option::Option::Some((run_part, rest)) = bytes.as_slice().split_at_checked(#run_length) else {
+                    return ::core::option::Option::None;
                 };
+                let result = #(#conditions)&*;
+                if !result {
+                    return ::core::option::Option::None;
+                }
+
+                #(#apply_tags)*
+
+                return #new_state_fn_ident(rest.into_iter(), byte_idx + #run_length, captures, false);
             }
-        };
+        });
+        }
+    }
+
+    pub(super) struct StateFnNormal<'a> {
+        num_captures: usize,
+        ident: ImplFunctionalFnIdent,
+        accept_transitions: &'a [ThreadUpdates],
+        symbol_transitions: &'a [(std::ops::RangeInclusive<u8>, ThreadUpdates)],
+    }
+    impl<'a> ToTokens for StateFnNormal<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &StateFnNormal {
+                num_captures,
+                ident,
+                accept_transitions,
+                symbol_transitions,
+            } = self;
+
+            /// Should have text position `i` and `mut captures` in local context
+            fn make_capture_statements(tu: &ThreadUpdates) -> TokenStream {
+                fn map_capture(
+                    (capture_group, (start, end)): (usize, &(bool, bool)),
+                ) -> TokenStream {
+                    let mut out = TokenStream::new();
+                    if *start {
+                        out.extend(quote! {
+                            captures[#capture_group].0 = byte_idx;
+                        });
+                    }
+                    if *end {
+                        out.extend(quote! {
+                            captures[#capture_group].1 = byte_idx;
+                        });
+                    }
+                    return out;
+                }
+                return tu
+                    .update_captures
+                    .iter()
+                    .enumerate()
+                    .map(map_capture)
+                    .collect();
+            }
+
+            // for end_case, `end` check is implicit
+            let end_case = match &accept_transitions {
+                &[] => quote! { ::core::option::Option::None },
+                &[tu] if tu.start_only && ident.state_idx == 0 => {
+                    // Accept if `start`
+                    let capture_statements = make_capture_statements(tu);
+                    quote! {
+                        #capture_statements
+                        if start {
+                            ::core::option::Option::Some(captures)
+                        } else {
+                            ::core::option::Option::None
+                        }
+                    }
+                }
+                &[tu] if tu.start_only && ident.state_idx != 0 => {
+                    quote! { ::core::option::Option::None }
+                }
+                &[tu] => {
+                    // is always accepting
+                    let capture_statements = make_capture_statements(tu);
+                    quote! {
+                        #capture_statements
+                        ::core::option::Option::Some(captures)
+                    }
+                }
+                _more => quote! {
+                    compile_error!("Should only be one thread update on accept for one-pass");
+                },
+            };
+
+            let cases = symbol_transitions.into_iter().map(|(range, tu)| {
+                let start = *range.start();
+                let end = *range.end();
+                let conditions = if tu.end_only || (tu.start_only && ident.state_idx != 0) {
+                    // end_only should already be optimized out, but we are not at the end so this transition should never happen.
+                    // since we always start at state 0, start_only is only satisfied when `i == 0`
+                    quote! { if false }
+                } else if tu.start_only && ident.state_idx == 0 {
+                    // if we ever come back to state 0, we may actually need to check start
+                    quote! { if start }
+                } else {
+                    TokenStream::new()
+                };
+
+                let new_state_fn_ident = ImplFunctionalFnIdent::new(tu.state);
+                let capture_statements = make_capture_statements(tu);
+
+                return quote! {
+                    ::core::option::Option::Some(#start..=#end) #conditions => {
+                        #capture_statements
+                        #new_state_fn_ident(bytes, byte_idx + 1, captures, false)
+                    }
+                };
+            });
+
+            tokens.extend(quote! {
+                fn #ident<'a>(
+                    mut bytes: ::core::slice::Iter<'a, u8>,
+                    byte_idx: usize,
+                    mut captures: [(usize, usize); #num_captures],
+                    start: bool,
+                ) -> ::core::option::Option<[(usize, usize); #num_captures]> {
+                    return match bytes.next() {
+                        ::core::option::Option::None => {
+                            #end_case
+                        }
+                        #(#cases)*
+                        ::core::option::Option::Some(_) => ::core::option::Option::None,
+                    };
+                }
+            });
+        }
+    }
+
+    pub(super) enum StateFn<'a> {
+        WithRun(StateFnWithRun<'a>),
+        Normal(StateFnNormal<'a>),
+    }
+    impl<'a> StateFn<'a> {
+        pub(super) fn new_run(num_captures: usize, ident: usize, run: &'a Run) -> Self {
+            return Self::WithRun(StateFnWithRun {
+                num_captures,
+                ident: ImplFunctionalFnIdent::new(ident),
+                run,
+            });
+        }
+        pub(super) fn new_normal(
+            num_captures: usize,
+            ident: usize,
+            accept_transitions: &'a [ThreadUpdates],
+            symbol_transitions: &'a [(std::ops::RangeInclusive<u8>, ThreadUpdates)],
+        ) -> Self {
+            return Self::Normal(StateFnNormal {
+                num_captures,
+                ident: ImplFunctionalFnIdent::new(ident),
+                accept_transitions,
+                symbol_transitions,
+            });
+        }
+    }
+    impl<'a> ToTokens for StateFn<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            match self {
+                StateFn::WithRun(fn_with_run) => {
+                    fn_with_run.to_tokens(tokens);
+                }
+                StateFn::Normal(fn_normal) => {
+                    fn_normal.to_tokens(tokens);
+                }
+            }
+        }
+    }
+}
+
+/// Will evaluate to a `const` pair `(test_fn, exec_fn)`.
+///
+/// ## Params
+/// - `nfa` is the original nfa
+/// - `num_captures` is the calculated number of capture groups from `nfa`
+/// - `symbol_transitions` is the effective transitions (including other [`ThreadUpdates`] details) for each state.
+fn codegen_functional(
+    nfa: &U8NFA,
+    num_captures: usize,
+    symbol_transitions: Vec<Vec<(std::ops::RangeInclusive<u8>, ThreadUpdates)>>,
+    accept_transitions: Vec<Vec<ThreadUpdates>>,
+) -> TokenStream {
+    let U8NFA { states, .. } = nfa;
+    assert_eq!(states.len(), symbol_transitions.len());
+    assert_eq!(states.len(), accept_transitions.len());
+
+    let excluded_states = compute_excluded_states(nfa);
+    assert_eq!(states.len(), excluded_states.len());
+
+    let runs = compute_runs(&symbol_transitions);
+    assert_eq!(states.len(), runs.len());
+
+    let test_funcs = runs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !excluded_states[*i])
+        .filter_map(|(i, run)| match run {
+            StateRunInclusion::Start(run) => Some(functional_test::StateFn::new_run(i, run)),
+            StateRunInclusion::Internal => None,
+            StateRunInclusion::End | StateRunInclusion::None => {
+                Some(functional_test::StateFn::new_normal(
+                    i,
+                    &accept_transitions[i],
+                    &symbol_transitions[i],
+                ))
+            }
+        });
+    let impl_test_fn = quote! {
+        fn test<'a>(text: &'a str) -> bool {
+            #(#test_funcs)*
+            return func_state_0(text.as_bytes().iter(), true);
+        }
     };
+
     let exec_funcs = runs
         .iter()
         .enumerate()
         .filter(|(i, _)| !excluded_states[*i])
         .filter_map(|(i, run)| match run {
-            StateRunInclusion::Start(run) => Some((i, Some(run))),
+            StateRunInclusion::Start(run) => {
+                Some(functional_exec::StateFn::new_run(num_captures, i, run))
+            }
             StateRunInclusion::Internal => None,
-            StateRunInclusion::End => Some((i, None)),
-            StateRunInclusion::None => Some((i, None)),
-        })
-        .map(make_exec_func);
-
-    return quote! {{
-        fn test<'a>(text: &'a str) -> bool {
-            #(#test_funcs)*
-            return func_state_0(text.as_bytes().iter(), true);
-        }
+            StateRunInclusion::End | StateRunInclusion::None => {
+                Some(functional_exec::StateFn::new_normal(
+                    num_captures,
+                    i,
+                    &accept_transitions[i],
+                    &symbol_transitions[i],
+                ))
+            }
+        });
+    let impl_exec_fn = quote! {
         fn exec<'a>(text: &'a str) -> ::core::option::Option<[::core::option::Option<&'a str>; #num_captures]> {
             let captures: [(usize, usize); #num_captures] = [(usize::MAX, usize::MAX); #num_captures];
 
@@ -799,7 +1081,13 @@ fn codegen_functional(
             }
             return ::core::option::Option::Some(capture_strs);
         }
+    };
+
+    return quote! {{
+        #impl_test_fn
+        #impl_exec_fn
 
         (test, exec)
-    }}.into();
+    }}
+    .into();
 }
