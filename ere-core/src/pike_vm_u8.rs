@@ -50,6 +50,28 @@ impl<const N: usize, S: Send + Sync + Copy + Eq + std::fmt::Debug> std::fmt::Deb
     }
 }
 
+/// The NFA and some precomputed data to go with it.
+///
+/// Helps avoid recomputing the same data all over
+/// and also packages data together for convenience.
+struct CachedNFA<'a> {
+    nfa: &'a U8NFA,
+    excluded_states: Vec<bool>,
+    capture_groups: usize,
+}
+impl<'a> CachedNFA<'a> {
+    fn new(nfa: &'a U8NFA) -> CachedNFA<'a> {
+        let excluded_states = compute_excluded_states(nfa);
+        assert_eq!(nfa.states.len(), excluded_states.len());
+        let capture_groups = nfa.num_capture_groups();
+        return CachedNFA {
+            nfa,
+            excluded_states,
+            capture_groups,
+        };
+    }
+}
+
 /// Since we are shortcutting the epsilon transitions, we can skip printing
 /// states that have only epsilon transitions and are not the start/end states
 fn compute_excluded_states(nfa: &U8NFA) -> Vec<bool> {
@@ -115,16 +137,15 @@ mod impl_test {
     ///     // ...
     /// }
     /// ```
-    pub(super) struct TransitionSymbols<'a> {
-        pub(super) nfa: &'a U8NFA,
-        pub(super) excluded_states: &'a [bool],
-    }
+    pub(super) struct TransitionSymbols<'a>(pub &'a CachedNFA<'a>);
     impl<'a> ToTokens for TransitionSymbols<'a> {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-            let &TransitionSymbols {
+            let TransitionSymbols(nfa) = self;
+            let CachedNFA {
                 nfa,
                 excluded_states,
-            } = self;
+                ..
+            } = nfa;
 
             let transition_symbols_defs_test = nfa
                 .states
@@ -211,16 +232,26 @@ mod impl_test {
         }
     }
 
-    pub(super) struct TransitionEpsilons<'a> {
-        pub(super) nfa: &'a U8NFA,
-        pub(super) excluded_states: &'a [bool],
-    }
+    /// Implements a function that runs all epsilon transitions for all threads.
+    ///
+    /// ```ignore
+    /// fn transition_epsilons_test(
+    ///     list: &mut [bool],
+    ///     idx: usize,
+    ///     len: usize,
+    /// ) {
+    ///     // ...
+    /// }
+    /// ```
+    pub(super) struct TransitionEpsilons<'a>(pub &'a CachedNFA<'a>);
     impl<'a> ToTokens for TransitionEpsilons<'a> {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-            let &TransitionEpsilons {
+            let TransitionEpsilons(nfa) = self;
+            let CachedNFA {
                 nfa,
                 excluded_states,
-            } = self;
+                ..
+            } = nfa;
             assert_eq!(nfa.states.len(), excluded_states.len());
             let num_states = nfa.states.len();
 
@@ -298,18 +329,15 @@ mod impl_exec {
     ///     // ...
     /// }
     /// ```
-    pub(super) struct TransitionSymbols<'a> {
-        pub(super) nfa: &'a U8NFA,
-        pub(super) capture_groups: usize,
-        pub(super) excluded_states: &'a [bool],
-    }
+    pub(super) struct TransitionSymbols<'a>(pub &'a CachedNFA<'a>);
     impl<'a> ToTokens for TransitionSymbols<'a> {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-            let TransitionSymbols {
+            let TransitionSymbols(nfa) = self;
+            let CachedNFA {
                 nfa,
                 capture_groups,
                 excluded_states,
-            } = self;
+            } = nfa;
 
             let transition_symbols_defs_exec = nfa
                 .states
@@ -401,18 +429,26 @@ mod impl_exec {
         }
     }
 
-    pub(super) struct TransitionEpsilons<'a> {
-        pub(super) nfa: &'a U8NFA,
-        pub(super) capture_groups: usize,
-        pub(super) excluded_states: &'a [bool],
-    }
+    /// Implements a function that runs all epsilon transitions for all threads.
+    ///
+    /// ```ignore
+    /// fn transition_epsilons_exec(
+    ///     threads: &[::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>],
+    ///     idx: usize,
+    ///     len: usize,
+    /// ) -> ::std::vec::Vec<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>> {
+    ///     // ...
+    /// }
+    /// ```
+    pub(super) struct TransitionEpsilons<'a>(pub &'a CachedNFA<'a>);
     impl<'a> ToTokens for TransitionEpsilons<'a> {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-            let &TransitionEpsilons {
+            let TransitionEpsilons(nfa) = self;
+            let CachedNFA {
                 nfa,
                 capture_groups,
                 excluded_states,
-            } = self;
+            } = nfa;
             assert_eq!(nfa.states.len(), excluded_states.len());
             let num_states = nfa.states.len();
 
@@ -557,36 +593,25 @@ fn calculate_epsilon_propogations(nfa: &U8NFA, state: usize) -> Vec<ThreadUpdate
 /// Converts a [`U8NFA`] into a format that, when returned by a proc macro, will
 /// create the corresponding Pike VM.
 pub(crate) fn serialize_pike_vm_token_stream(nfa: &U8NFA) -> proc_macro2::TokenStream {
-    let U8NFA { states, .. } = nfa;
-    let capture_groups = nfa.num_capture_groups();
-    let excluded_states = compute_excluded_states(nfa);
-    assert_eq!(states.len(), excluded_states.len());
+    let nfa = CachedNFA::new(nfa);
 
-    let enum_states = std::iter::IntoIterator::into_iter(0..states.len())
-        .filter(|i| !excluded_states[*i])
-        .map(ImplVMStateLabel);
-    let state_count = states.len(); // TODO: not all of these are used, so we may be able to slightly reduce usage.
-    let accept_state = ImplVMStateLabel(states.len() - 1);
+    let capture_groups = nfa.capture_groups;
+    let enum_states = nfa
+        .excluded_states
+        .iter()
+        .enumerate()
+        .filter_map(|(i, excluded)| match excluded {
+            true => None,
+            false => Some(ImplVMStateLabel(i)),
+        });
+    let state_count = nfa.nfa.states.len(); // TODO: not all of these are used, so we may be able to slightly reduce usage.
+    let accept_state = ImplVMStateLabel(state_count - 1);
 
-    let transition_symbols_test = impl_test::TransitionSymbols {
-        nfa,
-        excluded_states: &excluded_states,
-    };
-    let transition_symbols_exec = impl_exec::TransitionSymbols {
-        nfa,
-        capture_groups,
-        excluded_states: &excluded_states,
-    };
+    let transition_symbols_test = impl_test::TransitionSymbols(&nfa);
+    let transition_symbols_exec = impl_exec::TransitionSymbols(&nfa);
 
-    let transition_epsilons_test = impl_test::TransitionEpsilons {
-        nfa,
-        excluded_states: &excluded_states,
-    };
-    let transition_epsilons_exec = impl_exec::TransitionEpsilons {
-        nfa,
-        capture_groups,
-        excluded_states: &excluded_states,
-    };
+    let transition_epsilons_test = impl_test::TransitionEpsilons(&nfa);
+    let transition_epsilons_exec = impl_exec::TransitionEpsilons(&nfa);
 
     return quote! {{
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]

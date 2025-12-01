@@ -641,6 +641,10 @@ impl ToTokens for ImplFunctionalFnIdent {
 mod functional_test {
     use super::*;
 
+    /// Implements the transition function for a state, where the state is the start of a run.
+    /// Being the start of a run, it may match many bytes.
+    ///
+    /// Generally called through [`StateFn`].
     pub(super) struct StateFnWithRun<'a> {
         ident: ImplFunctionalFnIdent,
         run: &'a Run,
@@ -677,6 +681,9 @@ mod functional_test {
         }
     }
 
+    /// Implements the transition function for a state, without a run.
+    ///
+    /// Generally called through [`StateFn`].
     pub(super) struct StateFnNormal<'a> {
         ident: ImplFunctionalFnIdent,
         accept_transitions: &'a [ThreadUpdates],
@@ -739,6 +746,15 @@ mod functional_test {
         }
     }
 
+    /// Implements the transition function for a state.
+    /// Will either use the [`StateFnWithRun`] or [`StateFnNormal`] depending on whether the state has a run
+    /// or should just match the next byte.
+    ///
+    /// ```ignore
+    /// fn #ident<'a>(mut bytes: ::core::slice::Iter<'a, u8>, start: bool) -> bool {
+    ///     // ...
+    /// }
+    /// ```
     pub(super) enum StateFn<'a> {
         WithRun(StateFnWithRun<'a>),
         Normal(StateFnNormal<'a>),
@@ -785,6 +801,10 @@ mod functional_test {
 mod functional_exec {
     use super::*;
 
+    /// Implements the transition function for a state, where the state is the start of a run.
+    /// Being the start of a run, it may match many bytes.
+    ///
+    /// Generally called through [`StateFn`].
     pub(super) struct StateFnWithRun<'a> {
         num_captures: usize,
         ident: ImplFunctionalFnIdent,
@@ -843,6 +863,9 @@ mod functional_exec {
         }
     }
 
+    /// Implements the transition function for a state, without a run.
+    ///
+    /// Generally called through [`StateFn`].
     pub(super) struct StateFnNormal<'a> {
         num_captures: usize,
         ident: ImplFunctionalFnIdent,
@@ -959,6 +982,20 @@ mod functional_exec {
         }
     }
 
+    /// Implements the transition function for a state.
+    /// Will either use the [`StateFnWithRun`] or [`StateFnNormal`] depending on whether the state has a run
+    /// or should just match the next byte.
+    ///
+    /// ```ignore
+    /// fn #ident<'a>(
+    ///     mut bytes: ::core::slice::Iter<'a, u8>,
+    ///     byte_idx: usize,
+    ///     mut captures: [(usize, usize); #num_captures],
+    ///     start: bool,
+    /// ) -> ::core::option::Option<[(usize, usize); #num_captures]> {
+    ///     // ...
+    /// }
+    /// ```
     pub(super) enum StateFn<'a> {
         WithRun(StateFnWithRun<'a>),
         Normal(StateFnNormal<'a>),
