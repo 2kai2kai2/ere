@@ -1,27 +1,26 @@
-//! Implements a Pike VM-like regex engine for `u8`s.
+//! Implements an nfa-like regex engine for over `char`s.
+//! The engine keeps all threads in lockstep (all threads are at the same input index),
+//! and the NFA's epsilon transitions are flattened to a single epsilon transition between symbols
+//! (including handling anchors and capture tags).
 //!
-//! Not exactly the PikeVM, but close enough that I am naming it that.
-//! It works similarly, except that since we are building at compile-time, there are benefits from inlining splitting.
-//!
-//! Due to the optimizations done earlier for the [`U8NFA`], we also have a slightly different NFA structure.
 //! Currently we flatten all epsilon transitions for the VM so that epsilon transitions are at most a single step between symbols.
 //! I'll have to review to ensure we avoid this causing large binary size overhead,
 //! but it should be worst-case `O(n^2)` in the number of states, and far fewer on average.
 
 use crate::{
-    working_nfa::EpsilonType,
-    working_u8_nfa::{U8Transition, U8NFA},
+    nfa_static,
+    working_nfa::{EpsilonType, WorkingNFA, WorkingTransition},
 };
-use quote::{quote, ToTokens, TokenStreamExt as _};
+use quote::{quote, ToTokens, TokenStreamExt};
 use std::fmt::Write;
 
 #[derive(Clone)]
-pub struct U8PikeVMThread<const N: usize, S: Send + Sync + Copy + Eq> {
+pub struct Thread<const N: usize, S: Send + Sync + Copy + Eq> {
     pub state: S,
     pub captures: [(usize, usize); N],
 }
 impl<const N: usize, S: Send + Sync + Copy + Eq + std::fmt::Debug> std::fmt::Debug
-    for U8PikeVMThread<N, S>
+    for Thread<N, S>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         struct CapturesDebug<'a, const N: usize>(&'a [(usize, usize); N]);
@@ -43,7 +42,7 @@ impl<const N: usize, S: Send + Sync + Copy + Eq + std::fmt::Debug> std::fmt::Deb
             }
         }
         return f
-            .debug_struct("PikeVMThread")
+            .debug_struct("Thread")
             .field("state", &self.state)
             .field("captures", &CapturesDebug(&self.captures))
             .finish();
@@ -51,16 +50,13 @@ impl<const N: usize, S: Send + Sync + Copy + Eq + std::fmt::Debug> std::fmt::Deb
 }
 
 /// The NFA and some precomputed data to go with it.
-///
-/// Helps avoid recomputing the same data all over
-/// and also packages data together for convenience.
 struct CachedNFA<'a> {
-    nfa: &'a U8NFA,
+    nfa: &'a WorkingNFA,
     excluded_states: Vec<bool>,
     capture_groups: usize,
 }
 impl<'a> CachedNFA<'a> {
-    fn new(nfa: &'a U8NFA) -> CachedNFA<'a> {
+    fn new(nfa: &'a WorkingNFA) -> CachedNFA<'a> {
         let excluded_states = compute_excluded_states(nfa);
         assert_eq!(nfa.states.len(), excluded_states.len());
         let capture_groups = nfa.num_capture_groups();
@@ -74,7 +70,7 @@ impl<'a> CachedNFA<'a> {
 
 /// Since we are shortcutting the epsilon transitions, we can skip printing
 /// states that have only epsilon transitions and are not the start/end states
-fn compute_excluded_states(nfa: &U8NFA) -> Vec<bool> {
+fn compute_excluded_states(nfa: &WorkingNFA) -> Vec<bool> {
     let mut out = vec![true; nfa.states.len()];
     out[0] = false;
     out[nfa.states.len() - 1] = false;
@@ -108,16 +104,16 @@ mod impl_test {
 
     /// Implements symbol transitions for a single state
     struct ImplTransitionStateSymbol<'a> {
-        transition: &'a U8Transition,
+        transition: &'a WorkingTransition,
     }
     impl<'a> ToTokens for ImplTransitionStateSymbol<'a> {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-            let &ImplTransitionStateSymbol { transition } = self;
-            let U8Transition { symbol, to } = transition;
-            let start = symbol.start();
-            let end = symbol.end();
+            let ImplTransitionStateSymbol { transition } = self;
+            let WorkingTransition { symbol, to } = transition;
+            let symbol = nfa_static::AtomStatic::serialize_as_token_stream(symbol);
             tokens.extend(quote! {{
-                if #start <= c && c <= #end {
+                let symbol = #symbol;
+                if symbol.check(c) {
                     new_list[#to] = true;
                 }
             }});
@@ -126,17 +122,7 @@ mod impl_test {
 
     /// Assumes the `VMStates` enum is already created locally in the token stream
     ///
-    /// Creates the function `transition_symbols_test` for running symbol transitions on the pike VM
-    ///
-    /// ```ignore
-    /// fn transition_symbols_test(
-    ///     list: &[bool],
-    ///     new_list: &mut [bool],
-    ///     c: u8,
-    /// ) {
-    ///     // ...
-    /// }
-    /// ```
+    /// Creates the function `transition_symbols_test` for running symbol transitions on the engine
     pub(super) struct TransitionSymbols<'a>(pub &'a CachedNFA<'a>);
     impl<'a> ToTokens for TransitionSymbols<'a> {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
@@ -169,7 +155,7 @@ mod impl_test {
                 fn transition_symbols_test(
                     list: &[bool],
                     new_list: &mut [bool],
-                    c: u8,
+                    c: char,
                 ) {
                     #(#transition_symbols_defs_test)*
                 }
@@ -295,19 +281,19 @@ mod impl_exec {
     use super::*;
 
     struct ImplTransition<'a> {
-        transition: &'a U8Transition,
+        transition: &'a WorkingTransition,
     }
     impl<'a> ToTokens for ImplTransition<'a> {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
             let ImplTransition { transition } = self;
-            let U8Transition { symbol, to } = transition;
-            let start = symbol.start();
-            let end = symbol.end();
+            let WorkingTransition { symbol, to } = transition;
+            let symbol = nfa_static::AtomStatic::serialize_as_token_stream(symbol);
             let to_label = ImplVMStateLabel(*to);
             tokens.extend(quote! {{
-                if #start <= c && c <= #end {
+                let symbol = #symbol;
+                if symbol.check(c) {
                     out.push(
-                        ::ere::pike_vm_u8::U8PikeVMThread {
+                        ::ere::flat_lockstep_nfa::Thread {
                             state: VMStates::#to_label,
                             captures: thread.captures.clone(),
                         },
@@ -319,16 +305,7 @@ mod impl_exec {
 
     /// Assumes the `VMStates` enum is already created locally in the token stream
     ///
-    /// Creates the function `transition_symbols_exec` for running symbol transitions on the pike VM
-    ///
-    /// ```ignore
-    /// fn transition_symbols_exec(
-    ///     threads: &[::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>],
-    ///     c: u8,
-    /// ) -> ::std::vec::Vec<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>> {
-    ///     // ...
-    /// }
-    /// ```
+    /// Creates the function `transition_symbols_exec` for running symbol transitions on the flat lockstep NFA
     pub(super) struct TransitionSymbols<'a>(pub &'a CachedNFA<'a>);
     impl<'a> ToTokens for TransitionSymbols<'a> {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
@@ -360,10 +337,10 @@ mod impl_exec {
 
             tokens.extend(quote! {
                 fn transition_symbols_exec(
-                    threads: &[::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>],
-                    c: u8,
-                ) -> ::std::vec::Vec<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>> {
-                    let mut out = ::std::vec::Vec::<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>>::new();
+                    threads: &[::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>],
+                    c: char,
+                ) -> ::std::vec::Vec<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>> {
+                    let mut out = ::std::vec::Vec::<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>>::new();
                     for thread in threads {
                         match thread.state {
                             #(#transition_symbols_defs_exec)*
@@ -433,10 +410,10 @@ mod impl_exec {
     ///
     /// ```ignore
     /// fn transition_epsilons_exec(
-    ///     threads: &[::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>],
+    ///     threads: &[::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>],
     ///     idx: usize,
     ///     len: usize,
-    /// ) -> ::std::vec::Vec<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>> {
+    /// ) -> ::std::vec::Vec<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>> {
     ///     // ...
     /// }
     /// ```
@@ -473,14 +450,14 @@ mod impl_exec {
 
             tokens.extend(quote! {
                 fn transition_epsilons_exec(
-                    threads: &[::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>],
+                    threads: &[::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>],
                     idx: usize,
                     len: usize,
-                ) -> ::std::vec::Vec<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>> {
+                ) -> ::std::vec::Vec<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>> {
                     let is_start = idx == 0;
                     let is_end = idx == len;
                     let mut occupied_states = ::std::vec![false; #num_states];
-                    let mut out = ::std::vec::Vec::<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>>::new();
+                    let mut out = ::std::vec::Vec::<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>>::new();
                     for thread in threads {
                         match thread.state {
                             #(#states_epsilon_transitions)*
@@ -541,19 +518,14 @@ impl ThreadUpdates {
     }
 }
 
-fn calculate_epsilon_propogations(nfa: &U8NFA, state: usize) -> Vec<ThreadUpdates> {
-    let U8NFA { states } = nfa;
+fn calculate_epsilon_propogations(nfa: &WorkingNFA, state: usize) -> Vec<ThreadUpdates> {
+    let WorkingNFA { states } = nfa;
     let capture_groups = nfa.num_capture_groups();
     // reduce epsilons to occur in a single step
-    let mut new_threads = vec![ThreadUpdates {
-        state,
-        update_captures: vec![(false, false); capture_groups],
-        start_only: false,
-        end_only: false,
-    }];
+    let mut new_threads = vec![];
     fn traverse(
         thread: ThreadUpdates,
-        states: &Vec<crate::working_u8_nfa::U8State>,
+        states: &Vec<crate::working_nfa::WorkingState>,
         out: &mut Vec<ThreadUpdates>,
     ) {
         out.push(thread.clone());
@@ -590,9 +562,13 @@ fn calculate_epsilon_propogations(nfa: &U8NFA, state: usize) -> Vec<ThreadUpdate
     return new_threads;
 }
 
-/// Converts a [`U8NFA`] into a format that, when returned by a proc macro, will
-/// create the corresponding Pike VM.
-pub(crate) fn serialize_pike_vm_token_stream(nfa: &U8NFA) -> proc_macro2::TokenStream {
+/// Converts a [`WorkingNFA`] into a format that, when returned by a proc macro, will
+/// create the corresponding engine.
+///
+/// Will evaluate to a `const` pair `(test_fn, exec_fn)`.
+pub(crate) fn serialize_flat_lockstep_nfa_token_stream(
+    nfa: &WorkingNFA,
+) -> proc_macro2::TokenStream {
     let nfa = CachedNFA::new(nfa);
 
     let capture_groups = nfa.capture_groups;
@@ -630,21 +606,21 @@ pub(crate) fn serialize_pike_vm_token_stream(nfa: &U8NFA) -> proc_macro2::TokenS
             list[0] = true;
 
             transition_epsilons_test(&mut list, 0, text.len());
-            for (i, c) in text.bytes().enumerate() {
+            for (i, c) in text.char_indices() {
                 transition_symbols_test(&list, &mut new_list, c);
                 if new_list.iter().all(|b| !b) {
                     return false;
                 }
                 ::std::mem::swap(&mut list, &mut new_list);
-                transition_epsilons_test(&mut list, i + 1, text.len());
+                transition_epsilons_test(&mut list, i + c.len_utf8(), text.len());
                 new_list.fill(false);
             }
 
             return list[#state_count - 1];
         }
         fn exec<'a>(text: &'a str) -> Option<[Option<&'a str>; #capture_groups]> {
-            let mut threads = ::std::vec::Vec::<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>>::new();
-            threads.push(::ere::pike_vm_u8::U8PikeVMThread {
+            let mut threads = ::std::vec::Vec::<::ere::flat_lockstep_nfa::Thread<#capture_groups, VMStates>>::new();
+            threads.push(::ere::flat_lockstep_nfa::Thread {
                 state: VMStates::State0,
                 captures: [(usize::MAX, usize::MAX); #capture_groups],
             });
@@ -652,13 +628,13 @@ pub(crate) fn serialize_pike_vm_token_stream(nfa: &U8NFA) -> proc_macro2::TokenS
             let new_threads = transition_epsilons_exec(&threads, 0, text.len());
             threads = new_threads;
 
-            for (i, c) in text.bytes().enumerate() {
+            for (i, c) in text.char_indices() {
                 let new_threads = transition_symbols_exec(&threads, c);
                 threads = new_threads;
-                let new_threads = transition_epsilons_exec(&threads, i + 1, text.len());
+                let new_threads = transition_epsilons_exec(&threads, i + c.len_utf8(), text.len());
                 threads = new_threads;
                 if threads.is_empty() {
-                    return ::core::option::Option::None;
+                    return None;
                 }
             }
 
@@ -677,7 +653,7 @@ pub(crate) fn serialize_pike_vm_token_stream(nfa: &U8NFA) -> proc_macro2::TokenS
                     assert_eq!(end, usize::MAX);
                 }
             }
-            return ::core::option::Option::Some(captures);
+            return Some(captures);
         }
 
         (test, exec)

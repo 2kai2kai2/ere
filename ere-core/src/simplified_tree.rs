@@ -1,5 +1,7 @@
 //! Implements a simplified intermediate representation of a regular expression.
 
+use std::num::NonZeroUsize;
+
 use crate::{config::Config, parse_tree::*};
 
 /// For translation between our parsed [`ERE`] and the [`crate::working_nfa::WorkingNFA`]
@@ -13,9 +15,9 @@ pub enum SimplifiedTreeNode {
     Capture(Box<SimplifiedTreeNode>, usize),
     Concat(Vec<SimplifiedTreeNode>),
     /// `Repeat(child, times)`
-    Repeat(Box<SimplifiedTreeNode>, usize),
+    Repeat(Box<SimplifiedTreeNode>, NonZeroUsize),
     /// `UpTo(child, max_times, longest)`
-    UpTo(Box<SimplifiedTreeNode>, usize, bool),
+    UpTo(Box<SimplifiedTreeNode>, NonZeroUsize, bool),
     /// `Star(child, longest)`
     Star(Box<SimplifiedTreeNode>, bool),
     Start,
@@ -44,10 +46,16 @@ impl SimplifiedTreeNode {
         return SimplifiedTreeNode::Concat(vec![self, other]);
     }
     pub fn repeat(self, count: usize) -> SimplifiedTreeNode {
-        return SimplifiedTreeNode::Repeat(self.into(), count);
+        return match NonZeroUsize::new(count) {
+            Some(count) => SimplifiedTreeNode::Repeat(self.into(), count),
+            None => SimplifiedTreeNode::Empty,
+        };
     }
     pub fn upto(self, count: usize, longest: bool) -> SimplifiedTreeNode {
-        return SimplifiedTreeNode::UpTo(self.into(), count, longest);
+        return match NonZeroUsize::new(count) {
+            Some(count) => SimplifiedTreeNode::UpTo(self.into(), count, longest),
+            None => SimplifiedTreeNode::Empty,
+        };
     }
     pub fn star(self, longest: bool) -> SimplifiedTreeNode {
         return SimplifiedTreeNode::Star(self.into(), longest);
@@ -116,8 +124,8 @@ impl SimplifiedTreeNode {
             SimplifiedTreeNode::Concat(nodes) => {
                 nodes.iter().map(SimplifiedTreeNode::max_bytes).sum()
             }
-            SimplifiedTreeNode::Repeat(node, times) => Some(node.max_bytes()? * times),
-            SimplifiedTreeNode::UpTo(node, times, _) => Some(node.max_bytes()? * times),
+            SimplifiedTreeNode::Repeat(node, times) => Some(node.max_bytes()? * times.get()),
+            SimplifiedTreeNode::UpTo(node, times, _) => Some(node.max_bytes()? * times.get()),
             SimplifiedTreeNode::Star(_, _) => None,
             SimplifiedTreeNode::Start => Some(0),
             SimplifiedTreeNode::End => Some(0),
@@ -144,8 +152,8 @@ impl SimplifiedTreeNode {
             SimplifiedTreeNode::Concat(nodes) => {
                 nodes.iter().map(SimplifiedTreeNode::min_bytes).sum()
             }
-            SimplifiedTreeNode::Repeat(node, times) => node.min_bytes() * times,
-            SimplifiedTreeNode::UpTo(node, times, _) => node.min_bytes() * times,
+            SimplifiedTreeNode::Repeat(node, times) => node.min_bytes() * times.get(),
+            SimplifiedTreeNode::UpTo(node, times, _) => node.min_bytes() * times.get(),
             SimplifiedTreeNode::Star(_, _) => 0,
             SimplifiedTreeNode::Start => 0,
             SimplifiedTreeNode::End => 0,

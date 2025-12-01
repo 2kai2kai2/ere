@@ -2,8 +2,8 @@ use std::hash::Hasher;
 
 use ere::prelude::*;
 use ere_macros::{
-    compile_regex_fixed_offset, compile_regex_pikevm, compile_regex_u8onepass,
-    compile_regex_u8pikevm,
+    compile_regex_fixed_offset, compile_regex_flat_lockstep_nfa,
+    compile_regex_flat_lockstep_nfa_u8, compile_regex_u8onepass,
 };
 
 /// Checks both [`Regex::exec`] and [`Regex::test`]
@@ -34,8 +34,8 @@ macro_rules! assert_nomatch {
 #[test]
 fn phone_number() {
     const REGEXES: [Regex<2>; 3] = [
-        compile_regex_pikevm!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"),
-        compile_regex_u8pikevm!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"),
+        compile_regex_flat_lockstep_nfa!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"),
+        compile_regex_flat_lockstep_nfa_u8!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"),
         compile_regex_u8onepass!(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$"),
     ];
 
@@ -63,8 +63,8 @@ fn phone_number() {
 #[test]
 fn byte_value_exec() {
     const REGEXES: [Regex<2>; 2] = [
-        compile_regex_pikevm!(r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"),
-        compile_regex_u8pikevm!(r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"),
+        compile_regex_flat_lockstep_nfa!(r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"),
+        compile_regex_flat_lockstep_nfa_u8!(r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"),
         // one pass not working yet, needs further optimizations
     ];
     for regex in REGEXES {
@@ -81,10 +81,10 @@ fn byte_value_exec() {
 #[test]
 fn ipv4_exec() {
     const REGEXES: [Regex<5>; 2] = [
-        compile_regex_pikevm!(
+        compile_regex_flat_lockstep_nfa!(
             r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
         ),
-        compile_regex_u8pikevm!(
+        compile_regex_flat_lockstep_nfa_u8!(
             r"^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$"
         ),
         // one pass not working yet, needs further optimizations
@@ -116,8 +116,8 @@ fn ipv4_exec() {
 #[test]
 fn needle() {
     const REGEXES: [Regex; 2] = [
-        compile_regex_pikevm!(r"nee+dle"),
-        compile_regex_u8pikevm!(r"nee+dle"),
+        compile_regex_flat_lockstep_nfa!(r"nee+dle"),
+        compile_regex_flat_lockstep_nfa_u8!(r"nee+dle"),
         // not one-pass because it is not start/end anchored
     ];
     for regex in REGEXES {
@@ -144,8 +144,8 @@ fn needle() {
 #[test]
 fn dot() {
     const REGEXES: [Regex; 3] = [
-        compile_regex_pikevm!("^.$"),
-        compile_regex_u8pikevm!("^.$"),
+        compile_regex_flat_lockstep_nfa!("^.$"),
+        compile_regex_flat_lockstep_nfa_u8!("^.$"),
         compile_regex_u8onepass!("^.$"),
     ];
     for regex in REGEXES {
@@ -162,8 +162,8 @@ fn dot() {
 #[test]
 fn duplicate_paths() {
     const REGEXES: [Regex<3>; 4] = [
-        compile_regex_pikevm!("^(ab|bc|ab|bc)(xy|yz|yz|xy)$"),
-        compile_regex_u8pikevm!("^(ab|bc|ab|bc)(xy|yz|yz|xy)$"),
+        compile_regex_flat_lockstep_nfa!("^(ab|bc|ab|bc)(xy|yz|yz|xy)$"),
+        compile_regex_flat_lockstep_nfa_u8!("^(ab|bc|ab|bc)(xy|yz|yz|xy)$"),
         // one-pass because it can be simplified to one-pass
         // since its branching paths are actually the same and get merged
         compile_regex_u8onepass!("^(ab|bc|ab|bc)(xy|yz|yz|xy)$"),
@@ -182,8 +182,8 @@ fn duplicate_paths() {
 #[test]
 fn hex_color() {
     const REGEXES: [Regex<4>; 4] = [
-        compile_regex_pikevm!("^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$"),
-        compile_regex_u8pikevm!("^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$"),
+        compile_regex_flat_lockstep_nfa!("^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$"),
+        compile_regex_flat_lockstep_nfa_u8!("^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$"),
         compile_regex_u8onepass!("^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$"),
         compile_regex_fixed_offset!("^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$"),
     ];
@@ -211,8 +211,10 @@ fn hex_color() {
 #[test]
 fn iso8601_date_extended() {
     const REGEXES: [Regex<4>; 4] = [
-        compile_regex_pikevm!("^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"),
-        compile_regex_u8pikevm!("^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"),
+        compile_regex_flat_lockstep_nfa!("^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"),
+        compile_regex_flat_lockstep_nfa_u8!(
+            "^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+        ),
         compile_regex_u8onepass!("^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"),
         compile_regex_fixed_offset!("^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"),
     ];
@@ -231,8 +233,12 @@ fn iso8601_date_extended() {
 fn iso8601_time_extended() {
     // excluding brevity rules bc that would be really complex
     const REGEXES: [Regex<5>; 3] = [
-        compile_regex_pikevm!(r"^T?([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9]([.,][0-9]+)?)$"),
-        compile_regex_u8pikevm!(r"^T?([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9]([.,][0-9]+)?)$"),
+        compile_regex_flat_lockstep_nfa!(
+            r"^T?([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9]([.,][0-9]+)?)$"
+        ),
+        compile_regex_flat_lockstep_nfa_u8!(
+            r"^T?([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9]([.,][0-9]+)?)$"
+        ),
         compile_regex_u8onepass!(r"^T?([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9]([.,][0-9]+)?)$"),
     ];
     for regex in &REGEXES {
@@ -260,8 +266,8 @@ fn iso8601_time_extended() {
 #[test]
 fn line_abc() {
     const REGEXES: [Regex<3>; 2] = [
-        compile_regex_pikevm!("(^|\n)abc(\n|$)"),
-        compile_regex_u8pikevm!("(^|\n)abc(\n|$)"),
+        compile_regex_flat_lockstep_nfa!("(^|\n)abc(\n|$)"),
+        compile_regex_flat_lockstep_nfa_u8!("(^|\n)abc(\n|$)"),
     ];
     for regex in &REGEXES {
         assert_match!(regex, "abc", [Some("abc"), Some(""), Some("")]);
@@ -279,8 +285,8 @@ fn line_abc() {
 #[test]
 fn us_state_abbreviations() {
     const REGEXES: [Regex; 2] = [
-        compile_regex_pikevm!("AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY"),
-        compile_regex_u8pikevm!("AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY"),
+        compile_regex_flat_lockstep_nfa!("AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY"),
+        compile_regex_flat_lockstep_nfa_u8!("AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY"),
     ];
     const STATES_STR: &str = "AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY";
     for regex in &REGEXES {
@@ -311,8 +317,8 @@ fn us_state_abbreviations() {
 #[test]
 fn find_quoted() {
     const REGEXES: [Regex<3>; 2] = [
-        compile_regex_pikevm!(r#""((\\"|[^"])*)""#),
-        compile_regex_u8pikevm!(r#""((\\"|[^"])*)""#),
+        compile_regex_flat_lockstep_nfa!(r#""((\\"|[^"])*)""#),
+        compile_regex_flat_lockstep_nfa_u8!(r#""((\\"|[^"])*)""#),
     ];
     for regex in &REGEXES {
         assert_match!(regex, r#""""#, [Some(r#""""#), Some(""), None]);
@@ -350,8 +356,8 @@ fn find_quoted() {
 #[test]
 fn find_discord_emoji() {
     const REGEXES: [Regex; 2] = [
-        compile_regex_pikevm!(":[[:alnum:]_]{2,}:"),
-        compile_regex_u8pikevm!(":[[:alnum:]_]{2,}:"),
+        compile_regex_flat_lockstep_nfa!(":[[:alnum:]_]{2,}:"),
+        compile_regex_flat_lockstep_nfa_u8!(":[[:alnum:]_]{2,}:"),
     ];
     for regex in &REGEXES {
         assert_match!(regex, ":crab:", [Some(":crab:")]);
@@ -379,8 +385,8 @@ fn find_discord_emoji() {
 #[test]
 fn html_comment() {
     const REGEXES: [Regex; 2] = [
-        compile_regex_pikevm!("<!--.*?-->"),
-        compile_regex_u8pikevm!("<!--.*?-->"),
+        compile_regex_flat_lockstep_nfa!("<!--.*?-->"),
+        compile_regex_flat_lockstep_nfa_u8!("<!--.*?-->"),
     ];
     for regex in &REGEXES {
         assert_match!(regex, "<!---->", [Some("<!---->")]);
@@ -413,7 +419,7 @@ fn html_link_extract() {
     // a very gross regex, but isn't really a task I'd use a regex for anyway.
     // multiline is just for formatting, is ignored using `\`
     const REGEXES: [Regex<8>; 2] = [
-        compile_regex_pikevm!(
+        compile_regex_flat_lockstep_nfa!(
             "<a\
         ([[:space:]]*[^[:space:][:cntrl:]\"'>/=]+\
             ([[:space:]]*=\
@@ -429,7 +435,7 @@ fn html_link_extract() {
         [^<]*\
         </a[[:space:]]*>"
         ),
-        compile_regex_u8pikevm!(
+        compile_regex_flat_lockstep_nfa_u8!(
             "<a\
         ([[:space:]]*[^[:space:][:cntrl:]\"'>/=]+\
             ([[:space:]]*=\
@@ -514,13 +520,13 @@ fn http_request() {
     // usually better to use a proper parser, but for testing purposes here:
     // based on https://www.rfc-editor.org/rfc/rfc9112.pdf
     const REGEXES: [Regex<7>; 2] = [
-        compile_regex_pikevm!(
+        compile_regex_flat_lockstep_nfa!(
             "^([A-Z]+) ([^[:space:]]+) (HTTP/[0-9].[0-9])\r\n\
             (([!#$%&'*+-.^_`|~[:alnum:]]+:[ \t]*[^\r\n]*?[ \t]*\r\n)*)\
             \r\n\
             ([\0-\u{10FFFF}]*)$"
         ),
-        compile_regex_u8pikevm!(
+        compile_regex_flat_lockstep_nfa_u8!(
             "^([A-Z]+) ([^[:space:]]+) (HTTP/[0-9].[0-9])\r\n\
             (([!#$%&'*+-.^_`|~[:alnum:]]+:[ \t]*[^\r\n]*?[ \t]*\r\n)*)\
             \r\n\
@@ -579,8 +585,12 @@ fn http_request() {
 #[test]
 fn uri_with_authority() {
     const REGEXES: [Regex<5>; 3] = [
-        compile_regex_pikevm!(r"^([[:alpha:]][[:alnum:]-+.]+)://([^?#]+)([?][^#]*)?(#[^#]*)?$"),
-        compile_regex_u8pikevm!(r"^([[:alpha:]][[:alnum:]-+.]+)://([^?#]+)([?][^#]*)?(#[^#]*)?$"),
+        compile_regex_flat_lockstep_nfa!(
+            r"^([[:alpha:]][[:alnum:]-+.]+)://([^?#]+)([?][^#]*)?(#[^#]*)?$"
+        ),
+        compile_regex_flat_lockstep_nfa_u8!(
+            r"^([[:alpha:]][[:alnum:]-+.]+)://([^?#]+)([?][^#]*)?(#[^#]*)?$"
+        ),
         compile_regex_u8onepass!(r"^([[:alpha:]][[:alnum:]-+.]+)://([^?#]+)([?][^#]*)?(#[^#]*)?$"),
     ];
     for regex in &REGEXES {

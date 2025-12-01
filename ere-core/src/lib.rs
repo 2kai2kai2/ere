@@ -5,16 +5,14 @@ use quote::quote;
 extern crate proc_macro;
 
 pub mod config;
-pub mod fixed_offset;
-pub mod nfa_static;
-pub mod one_pass_u8;
+mod engines;
 pub mod parse_tree;
-pub mod pike_vm;
-pub mod pike_vm_u8;
 pub mod simplified_tree;
 pub mod visualization;
 pub mod working_nfa;
 pub mod working_u8_nfa;
+
+pub use engines::*;
 
 /// A regular expression (specifically, a [POSIX ERE](https://en.wikibooks.org/wiki/Regular_Expressions/POSIX-Extended_Regular_Expressions)).
 ///
@@ -81,21 +79,24 @@ fn pick_base_engine(
 
     const ONE_PASS_U8_DESC: &str = "This regular expression is [one-pass](https://swtch.com/~rsc/regexp/regexp3.html#:~:text=Let%27s%20define%20a%20%E2%80%9Cone%2Dpass%20regular%20expression%E2%80%9D).
 This allows us to use an efficient [`::ere::one_pass_u8`] implementation.";
-    const PIKE_VM_U8_DESC: &str =
-        "Uses a general-case [`::ere::pike_vm_u8`] implementatation over `u8`s.";
-    const PIKE_VM_DESC: &str =
-        "Uses a general-case [`::ere::pike_vm`] implementatation over `char`s.";
+    const FLAT_LOCKSTEP_NFA_U8_DESC: &str =
+        "Uses a general-case [`::ere::flat_lockstep_nfa_u8`] implementatation over `u8`s.";
+    const FLAT_LOCKSTEP_NFA_DESC: &str =
+        "Uses a general-case [`::ere::flat_lockstep_nfa`] implementatation over `char`s.";
 
     let (base_engine, description) =
         if let Some(engine) = one_pass_u8::serialize_one_pass_token_stream(&u8_nfa) {
             (engine, ONE_PASS_U8_DESC)
         } else if is_ascii {
             (
-                pike_vm_u8::serialize_pike_vm_token_stream(&u8_nfa),
-                PIKE_VM_U8_DESC,
+                flat_lockstep_nfa_u8::serialize_flat_lockstep_nfa_u8_token_stream(&u8_nfa),
+                FLAT_LOCKSTEP_NFA_U8_DESC,
             )
         } else {
-            (pike_vm::serialize_pike_vm_token_stream(&nfa), PIKE_VM_DESC)
+            (
+                flat_lockstep_nfa::serialize_flat_lockstep_nfa_token_stream(&nfa),
+                FLAT_LOCKSTEP_NFA_DESC,
+            )
         };
     return (base_engine, tree, nfa, u8_nfa, description);
 }
@@ -140,25 +141,25 @@ pub fn __compile_regex(stream: TokenStream) -> TokenStream {
     .into();
 }
 
-/// Always uses the [`pike_vm`] engine
-pub fn __compile_regex_engine_pike_vm(stream: TokenStream) -> TokenStream {
+/// Always uses the [`flat_lockstep_nfa`] engine
+pub fn __compile_regex_engine_flat_lockstep_nfa(stream: TokenStream) -> TokenStream {
     let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
-    let fn_pair = pike_vm::serialize_pike_vm_token_stream(&nfa);
+    let fn_pair = flat_lockstep_nfa::serialize_flat_lockstep_nfa_token_stream(&nfa);
     return quote! {
         ::ere::__construct_regex(#fn_pair)
     }
     .into();
 }
 
-/// Always uses the [`pike_vm_u8`] engine
-pub fn __compile_regex_engine_pike_vm_u8(stream: TokenStream) -> TokenStream {
+/// Always uses the [`flat_lockstep_nfa_u8`] engine
+pub fn __compile_regex_engine_flat_lockstep_nfa_u8(stream: TokenStream) -> TokenStream {
     let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
     let nfa = working_u8_nfa::U8NFA::new(&nfa);
-    let fn_pair = pike_vm_u8::serialize_pike_vm_token_stream(&nfa);
+    let fn_pair = flat_lockstep_nfa_u8::serialize_flat_lockstep_nfa_u8_token_stream(&nfa);
     return quote! {
         ::ere::__construct_regex(#fn_pair)
     }

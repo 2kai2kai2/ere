@@ -26,7 +26,7 @@ pub fn compile_regex(stream: TokenStream) -> TokenStream {
     return ere_core::__compile_regex(stream);
 }
 
-/// Checks and compiles a regular expression into a into a [`ere_core::Regex<N>`] with the [`ere_core::pike_vm`] engine.
+/// Checks and compiles a regular expression into a into a [`ere_core::Regex<N>`] with the [`ere_core::flat_lockstep_nfa`] engine.
 /// Unless you specifically want this engine, you might want to use [`compile_regex!`] instead.
 ///
 /// This compilation happens during build using proc macros,
@@ -40,16 +40,16 @@ pub fn compile_regex(stream: TokenStream) -> TokenStream {
 ///
 /// ```
 /// use ere_core::Regex;
-/// use ere_macros::compile_regex_pikevm;
+/// use ere_macros::compile_regex_flat_lockstep_nfa;
 ///
-/// const MY_REGEX: Regex<2> = compile_regex_pikevm!("a(b?)c");
+/// const MY_REGEX: Regex<2> = compile_regex_flat_lockstep_nfa!("a(b?)c");
 /// ```
 #[proc_macro]
-pub fn compile_regex_pikevm(stream: TokenStream) -> TokenStream {
-    return ere_core::__compile_regex_engine_pike_vm(stream);
+pub fn compile_regex_flat_lockstep_nfa(stream: TokenStream) -> TokenStream {
+    return ere_core::__compile_regex_engine_flat_lockstep_nfa(stream);
 }
 
-/// Checks and compiles a regular expression into a into a [`ere_core::Regex<N>`] with the [`ere_core::pike_vm_u8`] engine.
+/// Checks and compiles a regular expression into a into a [`ere_core::Regex<N>`] with the [`ere_core::flat_lockstep_nfa_u8`] engine.
 /// Unless you specifically want this engine, you might want to use [`compile_regex!`] instead.
 ///
 /// This compilation happens during build using proc macros,
@@ -63,13 +63,13 @@ pub fn compile_regex_pikevm(stream: TokenStream) -> TokenStream {
 ///
 /// ```
 /// use ere_core::Regex;
-/// use ere_macros::compile_regex_u8pikevm;
+/// use ere_macros::compile_regex_flat_lockstep_nfa_u8;
 ///
-/// const MY_REGEX: Regex<2> = compile_regex_u8pikevm!("a(b?)c");
+/// const MY_REGEX: Regex<2> = compile_regex_flat_lockstep_nfa_u8!("a(b?)c");
 /// ```
 #[proc_macro]
-pub fn compile_regex_u8pikevm(stream: TokenStream) -> TokenStream {
-    return ere_core::__compile_regex_engine_pike_vm_u8(stream);
+pub fn compile_regex_flat_lockstep_nfa_u8(stream: TokenStream) -> TokenStream {
+    return ere_core::__compile_regex_engine_flat_lockstep_nfa_u8(stream);
 }
 
 /// Checks and compiles a regular expression into a [`ere_core::Regex<N>`] with the [`ere_core::one_pass_u8`] engine.

@@ -5,11 +5,17 @@ use ere::{compile_regex, Regex};
 use pprof::criterion::{Output, PProfProfiler};
 
 macro_rules! key_to_engine {
-    ($re:literal, pikevm) => {
-        ("pikevm", ::ere::compile_regex_pikevm!($re))
+    ($re:literal, flat_lockstep_nfa) => {
+        (
+            "flat_lockstep_nfa",
+            ::ere::compile_regex_flat_lockstep_nfa!($re),
+        )
     };
-    ($re:literal, pikevm_u8) => {
-        ("pikevm_u8", ::ere::compile_regex_u8pikevm!($re))
+    ($re:literal, flat_lockstep_nfa_u8) => {
+        (
+            "flat_lockstep_nfa_u8",
+            ::ere::compile_regex_flat_lockstep_nfa_u8!($re),
+        )
     };
     ($re:literal, one_pass_u8) => {
         ("one_pass_u8", ::ere::compile_regex_u8onepass!($re))
@@ -23,14 +29,14 @@ macro_rules! key_to_engine {
 /// `compile_engines!("some regex", engine[, engines...])`
 ///
 /// Where valid engine ids are:
-/// - `pikevm` for [`::ere::compile_regex_pikevm`]
-/// - `pikevm_u8` for [`::ere::compile_regex_u8pikevm`]
+/// - `flat_lockstep_nfa` for [`::ere::compile_regex_flat_lockstep_nfa`]
+/// - `flat_lockstep_nfa_u8` for [`::ere::compile_regex_flat_lockstep_nfa_u8`]
 /// - `one_pass_u8` for [`::ere::compile_regex_u8onepass`]
 /// - `fixed_offset` for [`::ere::compile_regex_fixed_offset`]
 ///
 /// ## Output
 /// Pairs with labels and regexes e.g.
-/// `("pikevm", <regex struct>), ...`
+/// `("flat_lockstep_nfa", <regex struct>), ...`
 macro_rules! compile_engines {
     ($re:literal, $($engines:ident),+$(,)?) => {
         [
@@ -45,8 +51,8 @@ fn rgb_simple(c: &mut Criterion) {
     // test all relevant engines
     const REGEXES: [(&'static str, Regex<4>); 1] = compile_engines!(
         r"^#([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})$",
-        // pikevm,
-        // pikevm_u8,
+        // flat_lockstep_nfa,
+        // flat_lockstep_nfa_u8,
         // one_pass_u8,
         fixed_offset,
     );
@@ -90,8 +96,8 @@ fn rgba(c: &mut Criterion) {
     // test all relevant engines
     const REGEXES: [(&'static str, Regex<5>); 1] = compile_engines!(
         r"^#([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})?$",
-        // pikevm,
-        // pikevm_u8,
+        // flat_lockstep_nfa,
+        // flat_lockstep_nfa_u8,
         one_pass_u8,
     );
 
@@ -140,8 +146,8 @@ fn phone_number_usa(c: &mut Criterion) {
     // test all relevant engines
     const REGEXES: [(&'static str, Regex<2>); 1] = compile_engines!(
         r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$",
-        // pikevm,
-        // pikevm_u8,
+        // flat_lockstep_nfa,
+        // flat_lockstep_nfa_u8,
         one_pass_u8,
     );
 

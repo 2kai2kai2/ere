@@ -397,9 +397,9 @@ impl WorkingNFA {
                 WorkingNFA::build_capture(&tree, *group_num)
             }
             SimplifiedTreeNode::Concat(nodes) => WorkingNFA::build_concat(nodes),
-            SimplifiedTreeNode::Repeat(tree, times) => WorkingNFA::build_repeat(tree, *times),
+            SimplifiedTreeNode::Repeat(tree, times) => WorkingNFA::build_repeat(tree, times.get()),
             SimplifiedTreeNode::UpTo(tree, times, longest) => {
-                WorkingNFA::build_upto(tree, *times, *longest)
+                WorkingNFA::build_upto(tree, times.get(), *longest)
             }
             SimplifiedTreeNode::Star(tree, longest) => WorkingNFA::build_star(tree, *longest),
             SimplifiedTreeNode::Start => WorkingNFA::nfa_start(),
@@ -407,27 +407,38 @@ impl WorkingNFA {
             SimplifiedTreeNode::Never => WorkingNFA::nfa_never(),
         };
     }
+
+    /// Creates an NFA with the default `.*?` loops at the start and end (though they may be optimized away if not needed).
     pub fn new(tree: &SimplifiedTreeNode) -> WorkingNFA {
+        return Self::new_loop_opt(tree, true, true);
+    }
+    /// Creates an NFA but allowing specification of whether to include the `.*?` loops at the start and end.
+    pub fn new_loop_opt(tree: &SimplifiedTreeNode, start_loop: bool, end_loop: bool) -> WorkingNFA {
         let mut nfa = WorkingNFA::build(tree);
 
         nfa.clean_start_anchors();
         nfa.clean_end_anchors();
 
         // add loops at start and end in case we lack anchors
-        nfa = WorkingNFA::nfa_concat([
-            WorkingNFA::nfa_star(
-                WorkingNFA::nfa_symbol(&Atom::NonmatchingList(Vec::new())),
-                false,
-            ),
-            nfa,
-            WorkingNFA::nfa_star(
-                WorkingNFA::nfa_symbol(&Atom::NonmatchingList(Vec::new())),
-                false,
-            ),
-        ]);
+        if start_loop {
+            nfa = WorkingNFA::nfa_concat([
+                WorkingNFA::nfa_star(
+                    WorkingNFA::nfa_symbol(&Atom::NonmatchingList(Vec::new())),
+                    false,
+                ),
+                nfa,
+            ]);
+        }
+        if end_loop {
+            nfa = WorkingNFA::nfa_concat([
+                nfa,
+                WorkingNFA::nfa_star(
+                    WorkingNFA::nfa_symbol(&Atom::NonmatchingList(Vec::new())),
+                    false,
+                ),
+            ]);
+        }
 
-        // Then remove redundant transitions from nodes before/after anchors
-        // May include the loops we just added
         let zero_symbol_states: Vec<bool> =
             std::iter::zip(nfa.nodes_after_end(), nfa.nodes_before_start())
                 .map(|(a, b)| a || b)
