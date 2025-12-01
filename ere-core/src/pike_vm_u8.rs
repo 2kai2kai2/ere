@@ -12,7 +12,7 @@ use crate::{
     working_nfa::EpsilonType,
     working_u8_nfa::{U8Transition, U8NFA},
 };
-use quote::quote;
+use quote::{quote, ToTokens, TokenStreamExt as _};
 use std::fmt::Write;
 
 #[derive(Clone)]
@@ -50,11 +50,6 @@ impl<const N: usize, S: Send + Sync + Copy + Eq + std::fmt::Debug> std::fmt::Deb
     }
 }
 
-fn vmstate_label(idx: usize) -> proc_macro2::Ident {
-    let label = format!("State{idx}");
-    return proc_macro2::Ident::new(&label, proc_macro2::Span::call_site());
-}
-
 /// Since we are shortcutting the epsilon transitions, we can skip printing
 /// states that have only epsilon transitions and are not the start/end states
 fn compute_excluded_states(nfa: &U8NFA) -> Vec<bool> {
@@ -71,36 +66,214 @@ fn compute_excluded_states(nfa: &U8NFA) -> Vec<bool> {
     return out;
 }
 
-/// Assumes the `VMStates` enum is already created locally in the token stream
-///
-/// Creates the function for running symbol transitions on the pike VM
-fn serialize_pike_vm_symbol_propogation(
-    nfa: &U8NFA,
-) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    let U8NFA { states } = nfa;
-    let capture_groups = nfa.num_capture_groups();
-    let excluded_states = compute_excluded_states(nfa);
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ImplVMStateLabel(usize);
+impl ToTokens for ImplVMStateLabel {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        let ImplVMStateLabel(idx) = self;
+        let label = format!("State{idx}");
+        tokens.append(proc_macro2::Ident::new(
+            &label,
+            proc_macro2::Span::call_site(),
+        ));
+    }
+}
 
-    fn make_symbol_transition_test(t: &U8Transition) -> proc_macro2::TokenStream {
-        let U8Transition { symbol, to } = t;
-        let start = symbol.start();
-        let end = symbol.end();
-        return quote! {
-            {
+mod impl_test {
+    use quote::ToTokens;
+
+    use super::*;
+
+    /// Implements symbol transitions for a single state
+    struct ImplTransitionStateSymbol<'a> {
+        transition: &'a U8Transition,
+    }
+    impl<'a> ToTokens for ImplTransitionStateSymbol<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &ImplTransitionStateSymbol { transition } = self;
+            let U8Transition { symbol, to } = transition;
+            let start = symbol.start();
+            let end = symbol.end();
+            tokens.extend(quote! {{
                 if #start <= c && c <= #end {
                     new_list[#to] = true;
                 }
-            }
-        };
+            }});
+        }
     }
 
-    fn make_symbol_transition_exec(t: &U8Transition) -> proc_macro2::TokenStream {
-        let U8Transition { symbol, to } = t;
-        let start = symbol.start();
-        let end = symbol.end();
-        let to_label = vmstate_label(*to);
-        return quote! {
-            {
+    /// Assumes the `VMStates` enum is already created locally in the token stream
+    ///
+    /// Creates the function `transition_symbols_test` for running symbol transitions on the pike VM
+    ///
+    /// ```ignore
+    /// fn transition_symbols_test(
+    ///     list: &[bool],
+    ///     new_list: &mut [bool],
+    ///     c: u8,
+    /// ) {
+    ///     // ...
+    /// }
+    /// ```
+    pub(super) struct TransitionSymbols<'a> {
+        pub(super) nfa: &'a U8NFA,
+        pub(super) excluded_states: &'a [bool],
+    }
+    impl<'a> ToTokens for TransitionSymbols<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &TransitionSymbols {
+                nfa,
+                excluded_states,
+            } = self;
+
+            let transition_symbols_defs_test = nfa
+                .states
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !excluded_states[*i])
+                .map(|(i, state)| {
+                    let state_transitions = state
+                        .transitions
+                        .iter()
+                        .map(|t| ImplTransitionStateSymbol { transition: t });
+
+                    return quote! {
+                        if list[#i] {
+                            #(#state_transitions)*
+                        }
+                    };
+                });
+
+            tokens.extend(quote! {
+                fn transition_symbols_test(
+                    list: &[bool],
+                    new_list: &mut [bool],
+                    c: u8,
+                ) {
+                    #(#transition_symbols_defs_test)*
+                }
+            });
+        }
+    }
+
+    /// Implements epsilon transitions for a single state
+    ///
+    /// Becomes:
+    /// ```ignore
+    /// if list[#from_state] {
+    ///     // ...
+    /// }
+    /// ```
+    pub(super) struct ImplTransitionStateEpsilon<'a> {
+        pub(super) from_state: ImplVMStateLabel,
+        pub(super) thread_updates: &'a [ThreadUpdates],
+    }
+    impl<'a> ToTokens for ImplTransitionStateEpsilon<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &ImplTransitionStateEpsilon {
+                from_state,
+                thread_updates,
+            } = self;
+            let ImplVMStateLabel(from_state) = from_state;
+
+            // Write epsilon-propogation of threads to the token stream for test
+            let start_end_threads = thread_updates
+                .iter()
+                .filter(|t| t.start_only && t.end_only)
+                .map(ThreadUpdates::serialize_thread_update_test);
+            let start_threads = thread_updates
+                .iter()
+                .filter(|t| t.start_only && !t.end_only)
+                .map(ThreadUpdates::serialize_thread_update_test);
+            let end_threads = thread_updates
+                .iter()
+                .filter(|t| !t.start_only && t.end_only)
+                .map(ThreadUpdates::serialize_thread_update_test);
+            let normal_threads = thread_updates
+                .iter()
+                .filter(|t| !t.start_only && !t.end_only)
+                .map(ThreadUpdates::serialize_thread_update_test);
+
+            tokens.extend(quote! {
+                if list[#from_state] {
+                    if is_start && is_end {
+                        #(#start_end_threads)*
+                    }
+                    if is_start {
+                        #(#start_threads)*
+                    }
+                    if is_end {
+                        #(#end_threads)*
+                    }
+                    #(#normal_threads)*
+                }
+            });
+        }
+    }
+
+    pub(super) struct TransitionEpsilons<'a> {
+        pub(super) nfa: &'a U8NFA,
+        pub(super) excluded_states: &'a [bool],
+    }
+    impl<'a> ToTokens for TransitionEpsilons<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &TransitionEpsilons {
+                nfa,
+                excluded_states,
+            } = self;
+            assert_eq!(nfa.states.len(), excluded_states.len());
+            let num_states = nfa.states.len();
+
+            let states_epsilon_transitions = std::iter::zip(nfa.states.iter(), excluded_states)
+                .enumerate()
+                .filter(|(_, (_, &excluded))| !excluded)
+                .map(|(i, _)| {
+                    // all reachable states with next transition as epsilon
+                    let mut new_threads = calculate_epsilon_propogations(nfa, i);
+                    new_threads.retain(|t| {
+                        !nfa.states[t.state].transitions.is_empty() || t.state + 1 == num_states
+                    });
+
+                    let label: ImplVMStateLabel = ImplVMStateLabel(i);
+
+                    let state_epsilon_transitions_test = impl_test::ImplTransitionStateEpsilon {
+                        from_state: label,
+                        thread_updates: &new_threads,
+                    };
+                    state_epsilon_transitions_test.to_token_stream()
+                });
+
+            tokens.extend(quote! {
+                fn transition_epsilons_test(
+                    list: &mut [bool],
+                    idx: usize,
+                    len: usize,
+                ) {
+                    let is_start = idx == 0;
+                    let is_end = idx == len;
+                    #(#states_epsilon_transitions)*
+                }
+            });
+        }
+    }
+}
+
+mod impl_exec {
+    use quote::ToTokens;
+
+    use super::*;
+
+    struct ImplTransition<'a> {
+        transition: &'a U8Transition,
+    }
+    impl<'a> ToTokens for ImplTransition<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let ImplTransition { transition } = self;
+            let U8Transition { symbol, to } = transition;
+            let start = symbol.start();
+            let end = symbol.end();
+            let to_label = ImplVMStateLabel(*to);
+            tokens.extend(quote! {{
                 if #start <= c && c <= #end {
                     out.push(
                         ::ere::pike_vm_u8::U8PikeVMThread {
@@ -109,64 +282,179 @@ fn serialize_pike_vm_symbol_propogation(
                         },
                     );
                 }
-            }
-        };
+            }});
+        }
     }
 
-    let transition_symbols_defs_test = states
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !excluded_states[*i])
-        .map(|(i, state)| {
-            let state_transitions = state.transitions.iter().map(make_symbol_transition_test);
+    /// Assumes the `VMStates` enum is already created locally in the token stream
+    ///
+    /// Creates the function `transition_symbols_exec` for running symbol transitions on the pike VM
+    ///
+    /// ```ignore
+    /// fn transition_symbols_exec(
+    ///     threads: &[::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>],
+    ///     c: u8,
+    /// ) -> ::std::vec::Vec<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>> {
+    ///     // ...
+    /// }
+    /// ```
+    pub(super) struct TransitionSymbols<'a> {
+        pub(super) nfa: &'a U8NFA,
+        pub(super) capture_groups: usize,
+        pub(super) excluded_states: &'a [bool],
+    }
+    impl<'a> ToTokens for TransitionSymbols<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let TransitionSymbols {
+                nfa,
+                capture_groups,
+                excluded_states,
+            } = self;
 
-            return quote! {
-                if list[#i] {
-                    #(#state_transitions)*
+            let transition_symbols_defs_exec = nfa
+                .states
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !excluded_states[*i])
+                .map(|(i, state)| {
+                    let label = ImplVMStateLabel(i);
+                    let state_transitions = state
+                        .transitions
+                        .iter()
+                        .map(|t| ImplTransition { transition: t });
+
+                    return quote! {
+                        VMStates::#label => {
+                            #(#state_transitions)*
+                        }
+                    };
+                });
+
+            tokens.extend(quote! {
+                fn transition_symbols_exec(
+                    threads: &[::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>],
+                    c: u8,
+                ) -> ::std::vec::Vec<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>> {
+                    let mut out = ::std::vec::Vec::<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>>::new();
+                    for thread in threads {
+                        match thread.state {
+                            #(#transition_symbols_defs_exec)*
+                        }
+                    }
+                    return out;
                 }
-            };
-        });
-
-    let transition_symbols_defs_exec = states
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !excluded_states[*i])
-        .map(|(i, state)| {
-            let label = vmstate_label(i);
-            let state_transitions = state.transitions.iter().map(make_symbol_transition_exec);
-
-            return quote! {
-                VMStates::#label => {
-                    #(#state_transitions)*
-                }
-            };
-        });
-
-    let transition_symbols_test = quote! {
-        fn transition_symbols_test(
-            list: &[bool],
-            new_list: &mut [bool],
-            c: u8,
-        ) {
-            #(#transition_symbols_defs_test)*
+            });
         }
-    };
-    let transition_symbols_exec = quote! {
-        fn transition_symbols_exec(
-            threads: &[::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>],
-            c: u8,
-        ) -> ::std::vec::Vec<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>> {
-            let mut out = ::std::vec::Vec::<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>>::new();
-            for thread in threads {
-                match thread.state {
-                    #(#transition_symbols_defs_exec)*
-                }
-            }
-            return out;
-        }
-    };
+    }
 
-    return (transition_symbols_test, transition_symbols_exec);
+    /// Implements epsilon transitions for a single state
+    ///
+    /// Becomes:
+    /// ```ignore
+    /// VMStates::#from_state => {
+    ///     // ...
+    /// }
+    /// ```
+    pub(super) struct ImplTransitionStateEpsilon<'a> {
+        pub(super) from_state: ImplVMStateLabel,
+        pub(super) thread_updates: &'a [ThreadUpdates],
+    }
+    impl<'a> ToTokens for ImplTransitionStateEpsilon<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &ImplTransitionStateEpsilon {
+                from_state,
+                thread_updates,
+            } = self;
+
+            // Write epsilon-propogation of threads to the token stream for exec
+            let start_end_threads = thread_updates
+                .iter()
+                .filter(|t| t.start_only && t.end_only)
+                .map(ThreadUpdates::serialize_thread_update_exec);
+            let start_threads = thread_updates
+                .iter()
+                .filter(|t| t.start_only && !t.end_only)
+                .map(ThreadUpdates::serialize_thread_update_exec);
+            let end_threads = thread_updates
+                .iter()
+                .filter(|t| !t.start_only && t.end_only)
+                .map(ThreadUpdates::serialize_thread_update_exec);
+            let normal_threads = thread_updates
+                .iter()
+                .filter(|t| !t.start_only && !t.end_only)
+                .map(ThreadUpdates::serialize_thread_update_exec);
+
+            tokens.extend(quote! {
+                VMStates::#from_state => {
+                    if is_start && is_end {
+                        #(#start_end_threads)*
+                    }
+                    if is_start {
+                        #(#start_threads)*
+                    }
+                    if is_end {
+                        #(#end_threads)*
+                    }
+                    #(#normal_threads)*
+                }
+            });
+        }
+    }
+
+    pub(super) struct TransitionEpsilons<'a> {
+        pub(super) nfa: &'a U8NFA,
+        pub(super) capture_groups: usize,
+        pub(super) excluded_states: &'a [bool],
+    }
+    impl<'a> ToTokens for TransitionEpsilons<'a> {
+        fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+            let &TransitionEpsilons {
+                nfa,
+                capture_groups,
+                excluded_states,
+            } = self;
+            assert_eq!(nfa.states.len(), excluded_states.len());
+            let num_states = nfa.states.len();
+
+            let states_epsilon_transitions = std::iter::zip(nfa.states.iter(), excluded_states)
+                .enumerate()
+                .filter(|(_, (_, &excluded))| !excluded)
+                .map(|(i, _)| {
+                    // all reachable states with next transition as epsilon
+                    let mut new_threads = calculate_epsilon_propogations(nfa, i);
+                    new_threads.retain(|t| {
+                        !nfa.states[t.state].transitions.is_empty() || t.state + 1 == num_states
+                    });
+
+                    let label: ImplVMStateLabel = ImplVMStateLabel(i);
+
+                    let state_epsilon_transitions_exec = impl_exec::ImplTransitionStateEpsilon {
+                        from_state: label,
+                        thread_updates: &new_threads,
+                    };
+                    state_epsilon_transitions_exec.to_token_stream()
+                });
+
+            tokens.extend(quote! {
+                fn transition_epsilons_exec(
+                    threads: &[::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>],
+                    idx: usize,
+                    len: usize,
+                ) -> ::std::vec::Vec<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>> {
+                    let is_start = idx == 0;
+                    let is_end = idx == len;
+                    let mut occupied_states = ::std::vec![false; #num_states];
+                    let mut out = ::std::vec::Vec::<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>>::new();
+                    for thread in threads {
+                        match thread.state {
+                            #(#states_epsilon_transitions)*
+                        }
+                    }
+                    return out;
+                }
+            });
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -188,7 +476,7 @@ impl ThreadUpdates {
     /// and appends it to `out` from its local context.
     pub fn serialize_thread_update_exec(&self) -> proc_macro2::TokenStream {
         let new_state_idx = self.state;
-        let new_state = vmstate_label(self.state);
+        let new_state = ImplVMStateLabel(self.state);
         let mut capture_updates = proc_macro2::TokenStream::new();
         for (i, (start, end)) in self.update_captures.iter().cloned().enumerate() {
             if start {
@@ -266,148 +554,39 @@ fn calculate_epsilon_propogations(nfa: &U8NFA, state: usize) -> Vec<ThreadUpdate
     return new_threads;
 }
 
-/// Assumes the `VMStates` enum is already created locally in the token stream
-fn serialize_pike_vm_epsilon_propogation(
-    nfa: &U8NFA,
-) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    let U8NFA { states } = nfa;
-    let capture_groups = nfa.num_capture_groups();
-    let num_states = states.len();
-    let excluded_states = compute_excluded_states(nfa);
-
-    // Generate code to propogate/split a thread according to epsilon transitions
-    let mut transition_epsilons_test = proc_macro2::TokenStream::new();
-    let mut transition_epsilons_exec = proc_macro2::TokenStream::new();
-    for (i, _) in states.iter().enumerate() {
-        if excluded_states[i] {
-            // since we propogate, some states are now useless if they are intermediate
-            // with only epsilon transitions
-            continue;
-        }
-        // all reachable states with next transition as epsilon
-        let mut new_threads = calculate_epsilon_propogations(nfa, i);
-        new_threads
-            .retain(|t| !states[t.state].transitions.is_empty() || t.state + 1 == num_states);
-
-        // Write epsilon-propogation of threads to the token stream for test
-        let start_end_threads = new_threads
-            .iter()
-            .filter(|t| t.start_only && t.end_only)
-            .map(ThreadUpdates::serialize_thread_update_test);
-        let start_threads = new_threads
-            .iter()
-            .filter(|t| t.start_only && !t.end_only)
-            .map(ThreadUpdates::serialize_thread_update_test);
-        let end_threads = new_threads
-            .iter()
-            .filter(|t| !t.start_only && t.end_only)
-            .map(ThreadUpdates::serialize_thread_update_test);
-        let normal_threads = new_threads
-            .iter()
-            .filter(|t| !t.start_only && !t.end_only)
-            .map(ThreadUpdates::serialize_thread_update_test);
-
-        let label = vmstate_label(i);
-        transition_epsilons_test.extend(quote! {
-            if list[#i] {
-                if is_start && is_end {
-                    #(#start_end_threads)*
-                }
-                if is_start {
-                    #(#start_threads)*
-                }
-                if is_end {
-                    #(#end_threads)*
-                }
-                #(#normal_threads)*
-            }
-        });
-
-        // Write epsilon-propogation of threads to the token stream for exec
-        // TODO: should these be maintaining order? or does it not matter at start/end
-        let start_end_threads = new_threads
-            .iter()
-            .filter(|t| t.start_only && t.end_only)
-            .map(ThreadUpdates::serialize_thread_update_exec);
-        let start_threads = new_threads
-            .iter()
-            .filter(|t| t.start_only && !t.end_only)
-            .map(ThreadUpdates::serialize_thread_update_exec);
-        let end_threads = new_threads
-            .iter()
-            .filter(|t| !t.start_only && t.end_only)
-            .map(ThreadUpdates::serialize_thread_update_exec);
-        let normal_threads = new_threads
-            .iter()
-            .filter(|t| !t.start_only && !t.end_only)
-            .map(ThreadUpdates::serialize_thread_update_exec);
-
-        transition_epsilons_exec.extend(quote! {
-            VMStates::#label => {
-                if is_start && is_end {
-                    #(#start_end_threads)*
-                }
-                if is_start {
-                    #(#start_threads)*
-                }
-                if is_end {
-                    #(#end_threads)*
-                }
-                #(#normal_threads)*
-            }
-        });
-    }
-
-    let transition_epsilons_test = quote! {
-        fn transition_epsilons_test(
-            list: &mut [bool],
-            idx: usize,
-            len: usize,
-        ) {
-            let is_start = idx == 0;
-            let is_end = idx == len;
-            #transition_epsilons_test
-        }
-    };
-    let transition_epsilons_exec = quote! {
-        fn transition_epsilons_exec(
-            threads: &[::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>],
-            idx: usize,
-            len: usize,
-        ) -> ::std::vec::Vec<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>> {
-            let is_start = idx == 0;
-            let is_end = idx == len;
-            let mut occupied_states = ::std::vec![false; #num_states];
-            let mut out = ::std::vec::Vec::<::ere::pike_vm_u8::U8PikeVMThread<#capture_groups, VMStates>>::new();
-            for thread in threads {
-                match thread.state {
-                    #transition_epsilons_exec
-                }
-            }
-            return out;
-        }
-    };
-
-    return (transition_epsilons_test, transition_epsilons_exec);
-}
-
 /// Converts a [`U8NFA`] into a format that, when returned by a proc macro, will
 /// create the corresponding Pike VM.
 pub(crate) fn serialize_pike_vm_token_stream(nfa: &U8NFA) -> proc_macro2::TokenStream {
     let U8NFA { states, .. } = nfa;
     let capture_groups = nfa.num_capture_groups();
     let excluded_states = compute_excluded_states(nfa);
+    assert_eq!(states.len(), excluded_states.len());
 
     let enum_states = std::iter::IntoIterator::into_iter(0..states.len())
         .filter(|i| !excluded_states[*i])
-        .map(vmstate_label);
+        .map(ImplVMStateLabel);
     let state_count = states.len(); // TODO: not all of these are used, so we may be able to slightly reduce usage.
-    let accept_state = vmstate_label(states.len() - 1);
+    let accept_state = ImplVMStateLabel(states.len() - 1);
 
-    let (transition_symbols_test, transition_symbols_exec) =
-        serialize_pike_vm_symbol_propogation(nfa);
-    let (transition_epsilons_test, transition_epsilons_exec) =
-        serialize_pike_vm_epsilon_propogation(nfa);
+    let transition_symbols_test = impl_test::TransitionSymbols {
+        nfa,
+        excluded_states: &excluded_states,
+    };
+    let transition_symbols_exec = impl_exec::TransitionSymbols {
+        nfa,
+        capture_groups,
+        excluded_states: &excluded_states,
+    };
+
+    let transition_epsilons_test = impl_test::TransitionEpsilons {
+        nfa,
+        excluded_states: &excluded_states,
+    };
+    let transition_epsilons_exec = impl_exec::TransitionEpsilons {
+        nfa,
+        capture_groups,
+        excluded_states: &excluded_states,
+    };
 
     return quote! {{
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
