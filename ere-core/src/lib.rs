@@ -6,6 +6,7 @@ extern crate proc_macro;
 
 pub mod config;
 mod engines;
+mod epsilon_propogation;
 pub mod parse_tree;
 pub mod simplified_tree;
 pub mod visualization;

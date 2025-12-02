@@ -8,7 +8,7 @@
 //! but it should be worst-case `O(n^2)` in the number of states, and far fewer on average.
 
 use crate::{
-    working_nfa::EpsilonType,
+    epsilon_propogation::{EpsilonPropogation, Tag},
     working_u8_nfa::{U8Transition, U8NFA},
 };
 use quote::{quote, ToTokens, TokenStreamExt as _};
@@ -199,19 +199,19 @@ mod impl_test {
             // Write epsilon-propogation of threads to the token stream for test
             let start_end_threads = thread_updates
                 .iter()
-                .filter(|t| t.start_only && t.end_only)
+                .filter(|t| t.0.start_only && t.0.end_only)
                 .map(ThreadUpdates::serialize_thread_update_test);
             let start_threads = thread_updates
                 .iter()
-                .filter(|t| t.start_only && !t.end_only)
+                .filter(|t| t.0.start_only && !t.0.end_only)
                 .map(ThreadUpdates::serialize_thread_update_test);
             let end_threads = thread_updates
                 .iter()
-                .filter(|t| !t.start_only && t.end_only)
+                .filter(|t| !t.0.start_only && t.0.end_only)
                 .map(ThreadUpdates::serialize_thread_update_test);
             let normal_threads = thread_updates
                 .iter()
-                .filter(|t| !t.start_only && !t.end_only)
+                .filter(|t| !t.0.start_only && !t.0.end_only)
                 .map(ThreadUpdates::serialize_thread_update_test);
 
             tokens.extend(quote! {
@@ -261,7 +261,7 @@ mod impl_test {
                     // all reachable states with next transition as epsilon
                     let mut new_threads = calculate_epsilon_propogations(nfa, i);
                     new_threads.retain(|t| {
-                        !nfa.states[t.state].transitions.is_empty() || t.state + 1 == num_states
+                        !nfa.states[t.0.state].transitions.is_empty() || t.0.state + 1 == num_states
                     });
 
                     let label: ImplVMStateLabel = ImplVMStateLabel(i);
@@ -451,19 +451,19 @@ mod impl_exec {
             // Write epsilon-propogation of threads to the token stream for exec
             let start_end_threads = thread_updates
                 .iter()
-                .filter(|t| t.start_only && t.end_only)
+                .filter(|t| t.0.start_only && t.0.end_only)
                 .map(ThreadUpdates::serialize_thread_update_exec);
             let start_threads = thread_updates
                 .iter()
-                .filter(|t| t.start_only && !t.end_only)
+                .filter(|t| t.0.start_only && !t.0.end_only)
                 .map(ThreadUpdates::serialize_thread_update_exec);
             let end_threads = thread_updates
                 .iter()
-                .filter(|t| !t.start_only && t.end_only)
+                .filter(|t| !t.0.start_only && t.0.end_only)
                 .map(ThreadUpdates::serialize_thread_update_exec);
             let normal_threads = thread_updates
                 .iter()
-                .filter(|t| !t.start_only && !t.end_only)
+                .filter(|t| !t.0.start_only && !t.0.end_only)
                 .map(ThreadUpdates::serialize_thread_update_exec);
 
             tokens.extend(quote! {
@@ -515,7 +515,7 @@ mod impl_exec {
                     // all reachable states with next transition as epsilon
                     let mut new_threads = calculate_epsilon_propogations(nfa, i);
                     new_threads.retain(|t| {
-                        !nfa.states[t.state].transitions.is_empty() || t.state + 1 == num_states
+                        !nfa.states[t.0.state].transitions.is_empty() || t.0.state + 1 == num_states
                     });
 
                     let label: ImplVMStateLabel = ImplVMStateLabel(i);
@@ -627,16 +627,11 @@ mod impl_exec {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct ThreadUpdates {
-    pub state: usize,
-    pub update_captures: Vec<(bool, bool)>,
-    pub start_only: bool,
-    pub end_only: bool,
-}
+struct ThreadUpdates(EpsilonPropogation);
 impl ThreadUpdates {
     /// Creates a block which takes `list: &mut [bool; STATE_NUM]` from its local context, updates it in-place using `self` (compile-time).
     pub fn serialize_thread_update_test(&self) -> proc_macro2::TokenStream {
-        let new_state = self.state;
+        let new_state = self.0.state;
         return quote! {{
             list[#new_state] = true;
         }};
@@ -644,28 +639,23 @@ impl ThreadUpdates {
     /// Creates a block which takes `thread` from its local context, updates it using `self` (compile-time),
     /// and appends it to `new_threads` from its local context.
     pub fn serialize_thread_update_exec(&self) -> proc_macro2::TokenStream {
-        let new_state_idx = self.state;
-        let new_state = ImplVMStateLabel(self.state);
-        let mut capture_updates = proc_macro2::TokenStream::new();
-        for (i, (start, end)) in self.update_captures.iter().cloned().enumerate() {
-            if start {
-                capture_updates.extend(quote! {
-                    new_thread.captures[#i].0 = idx;
-                });
-            }
-            if end {
-                capture_updates.extend(quote! {
-                    new_thread.captures[#i].1 = idx;
-                });
-            }
-        }
+        let new_state_idx = self.0.state;
+        let new_state = ImplVMStateLabel(self.0.state);
+        let capture_updates = self.0.update_tags.iter().map(|tag| match tag {
+            Tag::StartCapture(capture_group) => quote! {
+                new_thread.captures[#capture_group].0 = idx;
+            },
+            Tag::EndCapture(capture_group) => quote! {
+                new_thread.captures[#capture_group].1 = idx;
+            },
+        });
 
         return quote! {
             if !occupied_states[#new_state_idx] {
                 let mut new_thread = thread.clone();
                 new_thread.state = VMStates::#new_state;
 
-                #capture_updates
+                #(#capture_updates)*
 
                 new_threads.push(new_thread);
                 occupied_states[#new_state_idx] = true;
@@ -675,52 +665,8 @@ impl ThreadUpdates {
 }
 
 fn calculate_epsilon_propogations(nfa: &U8NFA, state: usize) -> Vec<ThreadUpdates> {
-    let U8NFA { states } = nfa;
-    let capture_groups = nfa.num_capture_groups();
-    // reduce epsilons to occur in a single step
-    let mut new_threads = vec![ThreadUpdates {
-        state,
-        update_captures: vec![(false, false); capture_groups],
-        start_only: false,
-        end_only: false,
-    }];
-    fn traverse(
-        thread: ThreadUpdates,
-        states: &Vec<crate::working_u8_nfa::U8State>,
-        out: &mut Vec<ThreadUpdates>,
-    ) {
-        out.push(thread.clone());
-        for e in &states[thread.state].epsilons {
-            let mut new_thread = thread.clone();
-            new_thread.state = e.to;
-            match e.special {
-                EpsilonType::None => {}
-                EpsilonType::StartAnchor => new_thread.start_only = true,
-                EpsilonType::EndAnchor => new_thread.end_only = true,
-                EpsilonType::StartCapture(capture_group) => {
-                    new_thread.update_captures[capture_group].0 = true
-                }
-                EpsilonType::EndCapture(capture_group) => {
-                    new_thread.update_captures[capture_group].1 = true
-                }
-            }
-
-            if !out.contains(&new_thread) {
-                traverse(new_thread, states, out);
-            }
-        }
-    }
-    traverse(
-        ThreadUpdates {
-            state,
-            update_captures: vec![(false, false); capture_groups],
-            start_only: false,
-            end_only: false,
-        },
-        states,
-        &mut new_threads,
-    );
-    return new_threads;
+    let prop = EpsilonPropogation::calculate_epsilon_propogations_u8(nfa, state);
+    return prop.into_iter().map(ThreadUpdates).collect();
 }
 
 /// Converts a [`U8NFA`] into a format that, when returned by a proc macro, will
