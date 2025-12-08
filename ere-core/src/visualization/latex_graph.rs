@@ -1,5 +1,8 @@
-pub fn escape_latex(text: String) -> String {
+use crate::visualization::layout::{BuildLayout, DAGLayout};
+
+pub fn escape_latex(text: impl AsRef<str>) -> String {
     return text
+        .as_ref()
         .chars()
         .map(|c| match c {
             '\\' => r"{\textbackslash}".to_string(),
@@ -22,6 +25,27 @@ pub struct LatexGraphTransition {
     /// The label is a valid latex-encoded string to be inserted at the label.
     pub(crate) label: String,
 }
+impl LatexGraphTransition {
+    pub fn display_in_line(&self, from: usize) -> String {
+        let label = escape_latex(&self.label);
+        let bend = match self.to.cmp(&from) {
+            std::cmp::Ordering::Less => "[bend left] ",
+            std::cmp::Ordering::Equal => "[loop below]",
+            std::cmp::Ordering::Greater => "[bend left] ",
+        };
+        format!(
+            "\\path[->] (q{from}) edge {bend} node {{{label}}} (q{});\n",
+            self.to
+        )
+    }
+    pub fn display_straight(&self, from: usize) -> String {
+        let label = escape_latex(&self.label);
+        format!(
+            "\\path[->] (q{from}) edge node {{{label}}} (q{});\n",
+            self.to
+        )
+    }
+}
 
 pub struct LatexGraphState {
     /// The label is a valid latex-encoded string to be inserted at the label.
@@ -29,6 +53,39 @@ pub struct LatexGraphState {
     pub(crate) transitions: Vec<LatexGraphTransition>,
     pub(crate) initial: bool,
     pub(crate) accept: bool,
+}
+impl LatexGraphState {
+    /// All states are just in a horizontal line
+    pub fn display_in_line(&self, idx: usize) -> String {
+        let mut modifiers = String::new();
+        if self.initial {
+            modifiers += ", initial";
+        }
+        if self.accept {
+            modifiers += ", accepting"
+        }
+        let label = escape_latex(&self.label);
+        if idx == 0 {
+            return format!("\\node[state{modifiers}](q0){{{label}}};\n",);
+        } else {
+            return format!(
+                "\\node[state{modifiers}, right of=q{}](q{idx}){{{label}}};\n",
+                idx - 1,
+            );
+        }
+    }
+
+    pub fn display_at(&self, idx: usize, x: f64, y: f64) -> String {
+        let mut modifiers = String::new();
+        if self.initial {
+            modifiers += ", initial";
+        }
+        if self.accept {
+            modifiers += ", accepting"
+        }
+        let label = escape_latex(&self.label);
+        return format!("\\node[state{modifiers}](q{idx}) at ({x}, {y}) {{{label}}};\n",);
+    }
 }
 
 /// Used for tikz visualizations of NFA-like graphs
@@ -41,6 +98,8 @@ impl LatexGraph {
     /// If `include_doc` is `true`, will include the headers.
     /// Otherwise, you should include `\usepackage{tikz}` and `\usetikzlibrary{automata, positioning}`.
     pub fn to_tikz(&self, include_doc: bool) -> String {
+        let layout = self.pick_layout().map(|layout| layout.layout());
+
         let mut text_parts: Vec<String> = Vec::new();
         if include_doc {
             text_parts.push(
@@ -53,32 +112,25 @@ impl LatexGraph {
         let mut transition_parts = Vec::new();
 
         for (i, state) in self.states.iter().enumerate() {
-            let mut modifiers = String::new();
-            if state.initial {
-                modifiers += ", initial";
-            }
-            if state.accept {
-                modifiers += ", accepting"
-            }
-            if i == 0 {
-                text_parts.push(format!("\\node[state{modifiers}](q0){{$q_0$}};\n"));
+            if let Some(layout) = layout.as_ref() {
+                let (x, y) = layout[i];
+                text_parts.push(state.display_at(i, x * 2.0, y * 2.0));
             } else {
-                text_parts.push(format!(
-                    "\\node[state{modifiers}, right of=q{}](q{i}){{$q_{{{i}}}$}};\n",
-                    i - 1,
-                    // state.label
-                ));
+                text_parts.push(state.display_in_line(i));
             }
 
-            for LatexGraphTransition { to, label } in &state.transitions {
-                let bend = match to.cmp(&i) {
-                    std::cmp::Ordering::Less => "[bend left] ",
-                    std::cmp::Ordering::Equal => "[loop below]",
-                    std::cmp::Ordering::Greater => "[bend left] ",
-                };
-                transition_parts.push(format!(
-                    "\\path[->] (q{i}) edge {bend} node {{{label}}} (q{to});\n",
-                ));
+            for tr in &state.transitions {
+                if let Some(layout) = layout.as_ref() {
+                    let x = layout[i].0;
+                    let x_next = layout[tr.to].0;
+                    if x_next - x > 1.0 {
+                        transition_parts.push(tr.display_in_line(i));
+                    } else {
+                        transition_parts.push(tr.display_straight(i));
+                    }
+                } else {
+                    transition_parts.push(tr.display_in_line(i));
+                }
             }
         }
         text_parts.extend_from_slice(&transition_parts);
@@ -88,5 +140,14 @@ impl LatexGraph {
             text_parts.push("\\end{document}\n".into());
         }
         return text_parts.into_iter().collect();
+    }
+
+    fn pick_layout<'a>(&'a self) -> Option<Box<dyn BuildLayout + 'a>> {
+        if let Some(dag) = DAGLayout::new(self) {
+            return Some(Box::new(dag));
+        }
+
+        // TODO: more layouts
+        return None;
     }
 }
