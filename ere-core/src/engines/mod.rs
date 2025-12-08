@@ -1,3 +1,4 @@
+pub mod dfa_u8;
 pub mod fixed_offset;
 pub mod flat_lockstep_nfa;
 pub mod flat_lockstep_nfa_u8;

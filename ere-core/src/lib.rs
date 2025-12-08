@@ -85,21 +85,29 @@ This allows us to use an efficient [`::ere::one_pass_u8`] implementation.";
         "Uses a general-case [`::ere::flat_lockstep_nfa_u8`] implementatation over `u8`s.";
     const FLAT_LOCKSTEP_NFA_DESC: &str =
         "Uses a general-case [`::ere::flat_lockstep_nfa`] implementatation over `char`s.";
+    const DFA_DESC: &str = "Uses a [`::ere::dfa::U8DFA`] implementation over `u8`s.";
 
-    let (base_engine, description) =
+    let pick_base_engine_inner = || -> (_, &str) {
         if let Some(engine) = one_pass_u8::serialize_one_pass_token_stream(&u8_nfa) {
-            (engine, ONE_PASS_U8_DESC)
-        } else if is_ascii {
-            (
+            return (engine, ONE_PASS_U8_DESC);
+        }
+        let dfa_bound = working_u8_dfa::U8DFA::default_bound(u8_nfa.states.len());
+        if let Some(dfa) = working_u8_dfa::U8DFA::from_nfa(&u8_nfa, dfa_bound) {
+            return (dfa_u8::serialize_u8_dfa_token_stream(&dfa), DFA_DESC);
+        }
+        if is_ascii {
+            return (
                 flat_lockstep_nfa_u8::serialize_flat_lockstep_nfa_u8_token_stream(&u8_nfa),
                 FLAT_LOCKSTEP_NFA_U8_DESC,
-            )
-        } else {
-            (
-                flat_lockstep_nfa::serialize_flat_lockstep_nfa_token_stream(&nfa),
-                FLAT_LOCKSTEP_NFA_DESC,
-            )
-        };
+            );
+        }
+        return (
+            flat_lockstep_nfa::serialize_flat_lockstep_nfa_token_stream(&nfa),
+            FLAT_LOCKSTEP_NFA_DESC,
+        );
+    };
+
+    let (base_engine, description) = pick_base_engine_inner();
     return (base_engine, tree, nfa, u8_nfa, description);
 }
 
@@ -139,6 +147,24 @@ pub fn __compile_regex(stream: TokenStream) -> TokenStream {
         {
             ::ere::__construct_regex(#fn_pair)
         }
+    }
+    .into();
+}
+
+/// Always uses the [`dfa_u8`] engine
+pub fn __compile_regex_engine_dfa_u8(stream: TokenStream) -> TokenStream {
+    let ere: parse_tree::ERE = syn::parse_macro_input!(stream);
+    let tree = simplified_tree::SimplifiedTreeNode::from(ere);
+    let nfa = working_nfa::WorkingNFA::new(&tree);
+    let nfa = working_u8_nfa::U8NFA::new(&nfa);
+    let dfa = working_u8_dfa::U8DFA::from_nfa(
+        &nfa,
+        working_u8_dfa::U8DFA::default_bound(nfa.states.len()),
+    )
+    .unwrap();
+    let fn_pair = dfa_u8::serialize_u8_dfa_token_stream(&dfa);
+    return quote! {
+        ::ere::__construct_regex(#fn_pair)
     }
     .into();
 }
