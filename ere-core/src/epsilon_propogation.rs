@@ -8,6 +8,13 @@ pub enum Tag {
     StartCapture(usize),
     EndCapture(usize),
 }
+impl Tag {
+    pub fn capture_group(&self) -> usize {
+        return match self {
+            Tag::StartCapture(group_num) | Tag::EndCapture(group_num) => *group_num,
+        };
+    }
+}
 
 /// Represents a squashed sequence of epsilon transitions
 #[derive(Clone, PartialEq, Eq)]
@@ -26,6 +33,9 @@ where
 }
 
 impl EpsilonPropogation {
+    /// ## Params
+    /// - `nfa` is the original nfa
+    /// - `state` is the index of the state in `nfa.states`
     pub fn calculate_epsilon_propogations_char(
         nfa: &WorkingNFA,
         state: usize,
@@ -84,6 +94,11 @@ impl EpsilonPropogation {
         return new_threads;
     }
 
+    /// Will maintain priority order
+    ///
+    /// ## Params
+    /// - `nfa` is the original nfa
+    /// - `state` is the index of the state in `nfa.states`
     pub fn calculate_epsilon_propogations_u8(
         nfa: &U8NFA,
         state: usize,
