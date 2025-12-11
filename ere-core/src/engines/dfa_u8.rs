@@ -85,7 +85,7 @@ mod impl_test {
 
                     let mut state: VMStates = VMStates::StateStart;
 
-                    for (i, c) in text.bytes().enumerate() {
+                    for c in text.bytes() {
                         match (state, c) {
                             #(#normal_match_statements)*
                             _ => return false,

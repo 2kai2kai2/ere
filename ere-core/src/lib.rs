@@ -157,11 +157,20 @@ pub fn __compile_regex_engine_dfa_u8(stream: TokenStream) -> TokenStream {
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
     let nfa = working_u8_nfa::U8NFA::new(&nfa);
-    let dfa = working_u8_dfa::U8DFA::from_nfa(
-        &nfa,
-        working_u8_dfa::U8DFA::default_bound(nfa.states.len()),
-    )
-    .unwrap();
+    let dfa_state_limit = working_u8_dfa::U8DFA::default_bound(nfa.states.len());
+    let dfa = working_u8_dfa::U8DFA::from_nfa(&nfa, dfa_state_limit);
+    let Some(dfa) = dfa else {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!(
+                "Failed to convert NFA into DFA: exceeded DFA state limit of {},
+                compilation time and binary size could be exponential.",
+                dfa_state_limit
+            ),
+        )
+        .into_compile_error()
+        .into();
+    };
     let fn_pair = dfa_u8::serialize_u8_dfa_token_stream(&dfa);
     return quote! {
         ::ere::__construct_regex(#fn_pair)

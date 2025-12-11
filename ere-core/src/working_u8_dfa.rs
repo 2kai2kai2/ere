@@ -62,12 +62,12 @@ impl U8DFAAcceptTransition {
 }
 
 pub enum U8DFAAccept {
-    /// If there are only an end-anchored accept(s), this is the highest priority one.
+    /// If there are only end-anchored accept(s), this is the highest priority one.
     Anchored(U8DFAAcceptTransition),
-    /// If there are end-anchored and non-end-anchored accept(s),
+    /// If there are both end-anchored and non-end-anchored accept(s),
     /// where the highest anchored one is higher priority than the highest non-anchored one:
     ///
-    /// (anchored, non_anchored)
+    /// Is a pair `(anchored, non_anchored)`
     Both(U8DFAAcceptTransition, U8DFAAcceptTransition),
     /// If there is a non-end-anchored accept(s), with no higher priority anchored accept(s).
     Unanchored(U8DFAAcceptTransition),
@@ -152,14 +152,19 @@ pub struct U8DFAState {
     /// just in different orders.
     pub nfa_states: Vec<SubNFAStateID>,
     pub transitions: Vec<U8DFATransition>,
+    /// The highest-priority zero-length (i.e. epsilon) transition(s) to the accept state
+    /// from the NFA state(s) this DFA state represents.
     pub accept: U8DFAAccept,
 }
 impl U8DFAState {
-    /// Createsa new start state for the DFA, and expands it.
+    /// Creates a new start state for the DFA and expands it to create stubs for all the states
+    /// it has transitions to. Unlike normal states, the start state's transitions are generated
+    /// including transitions in the NFA with start anchors.
     ///
     /// ## Returns
-    /// (start_state, new_states)
-    /// where the new states should be added and need to be expanded.
+    /// A pair `(start_state, new_states)`
+    ///
+    /// where `new_states` are the initial set of states and all need to be expanded with [`U8DFAState::expand`].
     pub fn new_start_state(nfa: &U8NFA) -> (U8DFAState, Vec<U8DFAState>) {
         let epsilon_prop: Vec<EpsilonPropogation> =
             EpsilonPropogation::calculate_epsilon_propogations_u8(nfa, 0);
@@ -221,10 +226,12 @@ impl U8DFAState {
     ///
     /// ## Params
     /// - `nfa` is the original nfa
-    /// - `curr_dfa_states` is the current list of states in the DFA. New states will be added starting from the end of this list.
+    /// - `curr_dfa_states` is the current list of states in the DFA.
+    ///   The returned new states will be appended to the end of this list.
     ///
     /// ## Returns
-    /// A list of new states, which will be added to [`U8DFA::states`]. They will only have `nfa_states` set.
+    /// A list of new states, which will be added to [`U8DFA::states`]. They will only have `nfa_states` set,
+    /// and thus will need to have `expand` called on them to get the full set of transitions.
     fn expand(&mut self, nfa: &U8NFA, curr_dfa_states: &[U8DFAState]) -> Vec<U8DFAState> {
         assert!(self.transitions.is_empty());
         assert!(matches!(self.accept, U8DFAAccept::None));
@@ -335,14 +342,16 @@ pub struct U8DFA {
     /// This allows us to exclude transitions with start anchors from all other states,
     /// while implicitly including them in the start state.
     ///
-    /// The start state begins with one NFA state (usize::MAX?) with no tags.
+    /// The start state always begins with one NFA state (0) with no tags.
     pub start_state: U8DFAState,
     /// Unique by [`U8DFAState::nfa_states`], including priority order.
     pub states: Vec<U8DFAState>,
 }
 impl U8DFA {
-    /// Create a DFA from an NFA.
+    /// Creates a TDFA from a TNFA. This should be the primary way to create a `U8DFA`.
     ///
+    /// Since the size of a DFA is worst-case exponential in the number of NFA states,
+    /// the maximum number of states is `max_states`.
     /// If the number of states exceeds `max_states` then `None` will be returned.
     pub fn from_nfa(nfa: &U8NFA, max_states: usize) -> Option<Self> {
         let mut states; // Created DFA states (except start)
@@ -452,7 +461,7 @@ impl U8DFA {
                 let accept = match &state.accept {
                     U8DFAAccept::Anchored(_) => Some(crate::visualization::LatexGraphTransition {
                         to: self.states.len() + 1,
-                        label: "$".to_string(),
+                        label: "\\$".to_string(),
                     }),
                     U8DFAAccept::Both(_, _) => Some(crate::visualization::LatexGraphTransition {
                         to: self.states.len() + 1,
@@ -489,9 +498,8 @@ impl U8DFA {
     }
 }
 
-// ((^a)|(a))*
-
 /// Splits overlapping ranges so they are fully overlapping and/or non-overlapping.
+/// This essentially makes the ranges disjoint, while maintaining the associated values for each u8.
 ///
 /// E.g. `[(0..=5, 'a'), (3..=10, 'b')]` becomes `[(0..=2, ['a']), (3..=5, ['a', 'b']), (6..=10, ['b'])]`
 ///
@@ -554,7 +562,7 @@ impl<T> VecExt<T> for Vec<T> {
     }
 }
 
-/// For displaying bytes as characters.
+/// Newtype for displaying bytes as characters.
 /// - Printable ascii characters are printed as themselves (or their escaped versions)
 /// - Other characters are printed as their hex value
 struct DisplayByteChar(u8);
@@ -572,8 +580,8 @@ impl std::fmt::Display for DisplayByteChar {
     }
 }
 
-/// For displaying a byte range for transitions.
-/// - Printable ascii characters
+/// Newtype for displaying a byte range for transitions.
+/// See [`DisplayByteChar`] for details.
 struct DisplayRange(RangeInclusive<u8>);
 impl std::fmt::Display for DisplayRange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -604,19 +612,7 @@ mod tests {
         let nfa = WorkingNFA::new(&tree);
         let nfa = U8NFA::new(&nfa);
         let nfa = U8DFA::from_nfa(&nfa, 100).unwrap();
-        // for tr in &nfa.states[16].transitions {
-        //     if tr.symbol.start().is_ascii_graphic() || tr.symbol.start().is_ascii_whitespace() {
-        //         print!(" {:?}", *tr.symbol.start() as char);
-        //     } else {
-        //         print!("0x{:02x}", tr.symbol.start());
-        //     }
-        //     if tr.symbol.end().is_ascii_graphic() || tr.symbol.end().is_ascii_whitespace() {
-        //         print!("..={:?}  ", *tr.symbol.end() as char);
-        //     } else {
-        //         print!("..=0x{:02x} ", tr.symbol.end());
-        //     }
-        //     println!("{:?}", tr);
-        // }
-        println!("{}", nfa.to_tikz(true));
+
+        // println!("{}", nfa.to_tikz(true));
     }
 }

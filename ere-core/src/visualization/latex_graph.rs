@@ -27,7 +27,7 @@ pub struct LatexGraphTransition {
 }
 impl LatexGraphTransition {
     pub fn display_in_line(&self, from: usize) -> String {
-        let label = escape_latex(&self.label);
+        let label = &self.label;
         let bend = match self.to.cmp(&from) {
             std::cmp::Ordering::Less => "[bend left] ",
             std::cmp::Ordering::Equal => "[loop below]",
@@ -39,7 +39,7 @@ impl LatexGraphTransition {
         )
     }
     pub fn display_straight(&self, from: usize) -> String {
-        let label = escape_latex(&self.label);
+        let label = &self.label;
         format!(
             "\\path[->] (q{from}) edge node {{{label}}} (q{});\n",
             self.to

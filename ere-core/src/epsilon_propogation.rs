@@ -5,10 +5,13 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tag {
+    /// Marks that the start of capture group `{0}` should be updated to the current offset.
     StartCapture(usize),
+    /// Marks that the end of capture group `{0}` should be updated to the current offset.
     EndCapture(usize),
 }
 impl Tag {
+    /// Returns the capture group number this tag is associated with.
     pub fn capture_group(&self) -> usize {
         return match self {
             Tag::StartCapture(group_num) | Tag::EndCapture(group_num) => *group_num,
