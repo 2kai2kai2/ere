@@ -1,3 +1,10 @@
+## 0.2.4
+
+-   Added `DFAU8` engine
+-   Renamed `PikeVM` and `U8PikeVM` to `FlatLockstepNFA` and `FlatLockstepNFAU8`
+    since they are not really PikeVMs.
+-   Various organizational improvements for internals.
+
 ## 0.2.3
 
 -   Fixed import issues in macros, where `ere_core` was referenced rather than `ere`.

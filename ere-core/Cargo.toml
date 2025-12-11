@@ -1,7 +1,7 @@
 [package]
 name = "ere-core"
 description = "A compile-time alternative for POSIX extended regular expressions."
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 license = "MIT"
 authors = ["2kai2kai2"]
