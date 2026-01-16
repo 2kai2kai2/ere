@@ -432,12 +432,99 @@ impl U8NFA {
         return U8NFA { states };
     }
     /// Converts from a char-based NFA
+    ///
+    /// Does not add loops at start or end.
     pub fn new(nfa: &WorkingNFA) -> U8NFA {
+        return U8NFA::new_loop_opt(nfa, false, false);
+    }
+    /// Converts from a char-based NFA
+    ///
+    /// Allows additional loops to be added at the start and end,
+    /// So the passed NFA should probably not have loops included.
+    ///
+    /// Unlike [`WorkingNFA`]'s loops, these loops match any byte instead of processing
+    /// valid UTF-8 sequences. This should produce more efficient implementations,
+    /// and as long as the input is valid UTF-8, this should be equivalent.
+    pub fn new_loop_opt(nfa: &WorkingNFA, start_loop: bool, end_loop: bool) -> U8NFA {
         let mut nfa = U8NFA::build(nfa);
+
+        if start_loop {
+            nfa = U8NFA::nfa_concat([
+                U8NFA::nfa_star(U8NFA::nfa_byte(&U8Atom(0..=0xFF)), false),
+                nfa,
+            ]);
+        }
+        if end_loop {
+            nfa = U8NFA::nfa_concat([
+                nfa,
+                U8NFA::nfa_star(U8NFA::nfa_byte(&U8Atom(0..=0xFF)), false),
+            ]);
+        }
+
+        let zero_symbol_states: Vec<bool> =
+            std::iter::zip(nfa.nodes_after_end(), nfa.nodes_before_start())
+                .map(|(a, b)| a || b)
+                .collect();
+        for (from, state) in nfa.states.iter_mut().enumerate() {
+            if zero_symbol_states[from] {
+                state.transitions = Vec::new();
+            }
+        }
 
         while nfa.optimize_pass() {}
         nfa.remove_unreachable();
         return nfa;
+    }
+
+    /// Finds all nodes that are only ever visited after a `$`.
+    fn nodes_after_end(&self) -> Vec<bool> {
+        let mut nodes = vec![true; self.states.len()];
+        nodes[0] = false;
+
+        let mut stack = vec![0];
+        while let Some(from) = stack.pop() {
+            for e in self.states[from].epsilons.iter() {
+                if nodes[e.to] && e.special != EpsilonType::EndAnchor {
+                    nodes[e.to] = false;
+                    stack.push(e.to);
+                }
+            }
+            for t in self.states[from].transitions.iter() {
+                if nodes[t.to] {
+                    nodes[t.to] = false;
+                    stack.push(t.to);
+                }
+            }
+        }
+        return nodes;
+    }
+    /// Finds all nodes that are only ever visited before a `^`.
+    fn nodes_before_start(&self) -> Vec<bool> {
+        let mut reverse = vec![Vec::new(); self.states.len()];
+        for (i, state) in self.states.iter().enumerate() {
+            for e in &state.epsilons {
+                if e.special != EpsilonType::StartAnchor {
+                    reverse[e.to].push(i);
+                }
+            }
+            for t in &state.transitions {
+                reverse[t.to].push(i);
+            }
+        }
+
+        let mut nodes = vec![true; self.states.len()];
+        nodes[self.states.len() - 1] = false;
+
+        let mut stack = vec![self.states.len() - 1];
+        while let Some(to) = stack.pop() {
+            for from in &reverse[to] {
+                if nodes[*from] {
+                    nodes[*from] = false;
+                    stack.push(*from);
+                }
+            }
+        }
+        return nodes;
     }
 
     /// Helper function for removing a set of states.

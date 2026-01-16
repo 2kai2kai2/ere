@@ -157,6 +157,17 @@ pub struct U8DFAState {
     pub accept: U8DFAAccept,
 }
 impl U8DFAState {
+    /// Returns `true` if this state is an immediate accept state.
+    /// This means that it has any non-anchored accept transition.
+    /// 
+    /// This only applies to `test` implementations, not `exec` implementations,
+    /// as `exec` may need to match more data in higher-priority paths.
+    pub fn test_immediate_accept(&self) -> bool {
+        return matches!(
+            self.accept,
+            U8DFAAccept::Both(_, _) | U8DFAAccept::Unanchored(_)
+        );
+    }
     /// Creates a new start state for the DFA and expands it to create stubs for all the states
     /// it has transitions to. Unlike normal states, the start state's transitions are generated
     /// including transitions in the NFA with start anchors.
@@ -189,7 +200,7 @@ impl U8DFAState {
             nfa_tr.dedup_by_key_all(|tr| tr.1.to);
         }
 
-        let mut new_states = Vec::new();
+        let mut new_states: Vec<U8DFAState> = Vec::new();
         let mut start_state = U8DFAState {
             nfa_states: vec![SubNFAStateID(0)],
             transitions: Vec::new(),
@@ -198,13 +209,22 @@ impl U8DFAState {
         for (range, nfa_tr) in byte_ranges_transitions {
             let nfa_states = nfa_tr.iter().map(|(_, tr)| SubNFAStateID(tr.to)).collect();
 
-            let new_state = U8DFAState {
-                nfa_states,
-                transitions: Vec::new(),   // will do when expanded
-                accept: U8DFAAccept::None, // will do when expanded
+            let new_state_idx = new_states
+                .iter()
+                .enumerate()
+                .find(|&(_, s)| s.nfa_states == nfa_states);
+            let new_state_idx = if let Some((i, _)) = new_state_idx {
+                i
+            } else {
+                let new_state = U8DFAState {
+                    nfa_states,
+                    transitions: Vec::new(),   // will do when expanded
+                    accept: U8DFAAccept::None, // will do when expanded
+                };
+                let new_state_idx = new_states.len();
+                new_states.push(new_state);
+                new_state_idx
             };
-            let new_state_idx = new_states.len();
-            new_states.push(new_state);
 
             let add_tags = nfa_tr
                 .iter()
