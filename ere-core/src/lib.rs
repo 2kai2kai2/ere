@@ -91,8 +91,8 @@ This allows us to use an efficient [`::ere::one_pass_u8`] implementation.";
         if let Some(engine) = one_pass_u8::serialize_one_pass_token_stream(&u8_nfa) {
             return (engine, ONE_PASS_U8_DESC);
         }
-        let dfa_bound = working_u8_dfa::U8DFA::default_bound(u8_nfa.states.len());
-        if let Some(dfa) = working_u8_dfa::U8DFA::from_nfa(&u8_nfa, dfa_bound) {
+        let dfa_bound = working_u8_dfa::U8TDFA::default_bound(u8_nfa.states.len());
+        if let Some(dfa) = working_u8_dfa::U8TDFA::from_nfa(&u8_nfa, dfa_bound) {
             return (dfa_u8::serialize_u8_dfa_token_stream(&dfa), DFA_DESC);
         }
         if is_ascii {
@@ -157,8 +157,8 @@ pub fn __compile_regex_engine_dfa_u8(stream: TokenStream) -> TokenStream {
     let tree = simplified_tree::SimplifiedTreeNode::from(ere);
     let nfa = working_nfa::WorkingNFA::new(&tree);
     let nfa = working_u8_nfa::U8NFA::new(&nfa);
-    let dfa_state_limit = working_u8_dfa::U8DFA::default_bound(nfa.states.len());
-    let dfa = working_u8_dfa::U8DFA::from_nfa(&nfa, dfa_state_limit);
+    let dfa_state_limit = working_u8_dfa::U8TDFA::default_bound(nfa.states.len());
+    let dfa = working_u8_dfa::U8TDFA::from_nfa(&nfa, dfa_state_limit);
     let Some(dfa) = dfa else {
         return syn::Error::new(
             proc_macro2::Span::call_site(),

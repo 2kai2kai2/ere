@@ -5,7 +5,7 @@
 //!
 //! For more information, read https://en.wikipedia.org/wiki/Powerset_construction
 
-use crate::working_u8_dfa::{U8DFAAccept, U8DFAState, U8DFATransition, U8DFA};
+use crate::working_u8_dfa::{U8TDFAAccept, U8TDFAState, U8TDFATransition, U8DFA, U8TDFA};
 use quote::{quote, ToTokens, TokenStreamExt as _};
 
 /// If `idx == usize::MAX`, then it is the start state
@@ -30,6 +30,8 @@ impl ToTokens for VMStateLabel {
 }
 
 mod impl_test {
+    use crate::working_u8_dfa::{U8DFAAccept, U8DFAState, U8DFATransition, U8DFA};
+
     use super::*;
 
     pub struct TestFn<'a>(pub &'a U8DFA);
@@ -37,10 +39,7 @@ mod impl_test {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
             let &TestFn(dfa) = self;
 
-            if matches!(
-                dfa.start_state.accept,
-                U8DFAAccept::Both(_, _) | U8DFAAccept::Unanchored(_)
-            ) {
+            if matches!(dfa.start_state.accept, U8DFAAccept::Always) {
                 // this regular expression accepts all strings.
                 // note that U8DFAAccept::Anchored from start is accounted for with state_accepts_at_end,
                 // where we will only still be on start state if length is 0
@@ -105,7 +104,7 @@ mod impl_test {
     }
     impl<'a> NormalStateSymbolMatchStatements<'a> {
         fn from_pair((label, state): (VMStateLabel, &'a U8DFAState)) -> Self {
-            if let U8DFAAccept::Unanchored(_) | U8DFAAccept::Both(_, _) = &state.accept {
+            if let U8DFAAccept::Always = &state.accept {
                 // arriving at this state means we can directly accept
                 // we don't have to worry about anchored state accept, since symbol transitions are never at end
                 return NormalStateSymbolMatchStatements::ImmediateAccept(label);
@@ -141,11 +140,11 @@ mod impl_test {
 }
 
 mod impl_exec {
-    use crate::{epsilon_propogation::Tag, working_u8_dfa::U8DFAAcceptTransition};
+    use crate::{epsilon_propogation::Tag, working_u8_dfa::U8TDFAAcceptTransition};
 
     use super::*;
 
-    pub struct ExecFn<'a>(pub &'a U8DFA);
+    pub struct ExecFn<'a>(pub &'a U8TDFA);
     impl<'a> ToTokens for ExecFn<'a> {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
             let &ExecFn(dfa) = self;
@@ -158,7 +157,7 @@ mod impl_exec {
             let def_enum_states_nfa_count = dfa.states.iter().map(|state| state.nfa_states.len());
 
             // match dfa.start_state.accept {
-            //     U8DFAAccept::Both(anchored, unanchored) => {}
+            //     U8TDFAAccept::Both(anchored, unanchored) => {}
             // }
 
             let normal_match_statements = dfa
@@ -175,14 +174,14 @@ mod impl_exec {
                 .map(|state| state)
                 .chain(std::iter::once(&dfa.start_state))
                 .map(|state| {
-                    let U8DFAAcceptTransition {
+                    let U8TDFAAcceptTransition {
                         nfa_state,
                         add_tags,
                     } = match &state.accept {
-                        U8DFAAccept::None => return quote! { ::core::option::Option::None },
-                        U8DFAAccept::Anchored(accept) => accept,
-                        U8DFAAccept::Both(accept, _) => accept,
-                        U8DFAAccept::Unanchored(accept) => accept,
+                        U8TDFAAccept::None => return quote! { ::core::option::Option::None },
+                        U8TDFAAccept::Anchored(accept) => accept,
+                        U8TDFAAccept::Both(accept, _) => accept,
+                        U8TDFAAccept::Unanchored(accept) => accept,
                     };
 
                     let add_tags = add_tags.iter().map(|tag| match tag {
@@ -255,13 +254,13 @@ mod impl_exec {
     }
 
     enum NormalStateSymbolMatchStatements<'a> {
-        // ImmediateAccept(VMStateLabel, &'a U8DFAState),
-        SymbolTransitions(VMStateLabel, &'a U8DFAState),
+        // ImmediateAccept(VMStateLabel, &'a U8TDFAState),
+        SymbolTransitions(VMStateLabel, &'a U8TDFAState),
     }
     impl<'a> NormalStateSymbolMatchStatements<'a> {
-        fn from_pair((label, state): (VMStateLabel, &'a U8DFAState)) -> Self {
+        fn from_pair((label, state): (VMStateLabel, &'a U8TDFAState)) -> Self {
             // TODO: early return, we need to follow the ambiguous submatching rules
-            // if let U8DFAAccept::Unanchored(_) | U8DFAAccept::Both(_, _) = &state.accept {
+            // if let U8TDFAAccept::Unanchored(_) | U8TDFAAccept::Both(_, _) = &state.accept {
             //     // arriving at this state means we can directly accept
             //     // we don't have to worry about anchored state accept, since symbol transitions are never at end
             //     return NormalStateSymbolMatchStatements::ImmediateAccept(label, state);
@@ -290,7 +289,7 @@ mod impl_exec {
 
     struct NormalTransitionMatchStatement<'a> {
         from: VMStateLabel,
-        tr: &'a U8DFATransition,
+        tr: &'a U8TDFATransition,
     }
     impl<'a> ToTokens for NormalTransitionMatchStatement<'a> {
         fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
@@ -323,13 +322,21 @@ mod impl_exec {
     }
 }
 
-/// Converts a [`U8DFA`] into a format that, when returned by a proc macro, will
+/// Converts a [`U8TDFA`] into a format that, when returned by a proc macro, will
 /// create the corresponding engine.
 ///
+/// Will use [`U8DFA`] as an intermediate representation for `test` implementation.
+///
 /// Will evaluate to a `const` pair `(test_fn, exec_fn)`.
-pub(crate) fn serialize_u8_dfa_token_stream(dfa: &U8DFA) -> proc_macro2::TokenStream {
+pub(crate) fn serialize_u8_dfa_token_stream(tdfa: &U8TDFA) -> proc_macro2::TokenStream {
+    let Ok(dfa) = U8DFA::from_tagged(tdfa) else {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "Failed to convert TDFA to DFA. This is probably an internal error. Please report this.",
+        ).into_compile_error();
+    };
     let test_fn = impl_test::TestFn(&dfa);
-    let exec_fn = impl_exec::ExecFn(&dfa);
+    let exec_fn = impl_exec::ExecFn(&tdfa);
 
     return quote! {{
         #test_fn
